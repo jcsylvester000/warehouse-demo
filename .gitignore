@@ -1,0 +1,13 @@
+# dependencies
+node_modules
+
+# build output (Netlify rebuilds this)
+dist
+dist-ssr
+
+# local / editor / OS
+*.local
+*.tmp
+.DS_Store
+.vite
+.netlify

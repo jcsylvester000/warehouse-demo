@@ -1,0 +1,826 @@
+import { defineStore } from 'pinia';
+import { uid } from '../src/utils/format.js';
+
+const SKEY = 'carease_wms_app_v4';
+export const TODAY = '2026-06-16';
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/* ------------------------------------------------------------------ seed */
+function seed() {
+  // FIFO lots per item: oldest first. Each lot = { id, qty, unit_cost (base), landed (per-unit), received_at, ref }
+  const mkLots = (rows) => rows.map((x) => ({ id: uid('lot'), qty: x.q, unit_cost: x.c, landed: x.l || 0, received_at: x.d, ref: x.r || 'opening' }));
+  const items = [
+    { id: 'i-tab', sku: '100001', name: 'Samsung Galaxy Tab A9', vendor_id: 'v-techsource', item_type_id: 't-tablet', cost: 184.0, threshold: 20, bin_location: 'A-12', is_active: true,
+      lots: mkLots([{ q: 30, c: 180.0, l: 0, d: '2026-05-20' }, { q: 26, c: 184.0, l: 0, d: '2026-06-11' }]) },
+    { id: 'i-cart', sku: '100002', name: 'Care Cart — Standard', vendor_id: 'v-medcarts', item_type_id: 't-cart', cost: 640.0, threshold: 10, bin_location: 'C-03', is_active: true,
+      lots: mkLots([{ q: 7, c: 640.0, l: 0, d: '2026-06-12' }]) },
+    { id: 'i-basket', sku: '100003', name: 'Supply Basket', vendor_id: 'v-basketco', item_type_id: 't-basket', cost: 28.5, threshold: 40, bin_location: 'B-07', is_active: true,
+      lots: mkLots([{ q: 132, c: 28.5, l: 0, d: '2026-06-09' }]) },
+    { id: 'i-mdm', sku: '100004', name: 'MDM License Seat', vendor_id: 'v-ourmdm', item_type_id: 't-mdm', cost: 12.0, threshold: 15, bin_location: '—', is_active: true,
+      lots: mkLots([{ q: 88, c: 12.0, l: 0, d: '2026-06-01' }]) },
+    { id: 'i-mount', sku: '100005', name: 'Wall Mount Bracket', vendor_id: 'v-techsource', item_type_id: 't-mount', cost: 19.75, threshold: 25, bin_location: 'A-14', is_active: true,
+      lots: mkLots([{ q: 64, c: 19.75, l: 0, d: '2026-06-05' }]) },
+    { id: 'i-stylus', sku: '100006', name: 'Active Stylus Pen', vendor_id: 'v-techsource', item_type_id: 't-tablet', cost: 22.0, threshold: 20, bin_location: 'A-15', is_active: false,
+      lots: mkLots([{ q: 9, c: 22.0, l: 0, d: '2026-06-03' }]) },
+    { id: 'i-laptop', sku: '100007', name: 'Dell Latitude Laptop', vendor_id: 'v-techsource', item_type_id: 't-laptop', cost: 920.0, threshold: 5, bin_location: 'D-01', is_active: true,
+      lots: mkLots([{ q: 6, c: 900.0, l: 0, d: '2026-05-28' }]) },
+    { id: 'i-trivia', sku: '100008', name: 'Trivia Machine (Portable)', vendor_id: 'v-techsource', item_type_id: 't-trivia', cost: 350.0, threshold: 5, bin_location: 'D-02', is_active: true,
+      lots: mkLots([{ q: 8, c: 340.0, l: 0, d: '2026-06-02' }]) },
+  ];
+  const db = {
+    // sku counter drives numeric item numbers (numbers only, auto-generated)
+    counters: { po: 190, so: 145, ro: 42, vbill: 0, cart: 192, ship: 0, asset: 2210, ret: 0, sku: 100011 },
+    vendors: [
+      { id: 'v-medcarts', name: 'MedCarts Inc', email: 'orders@medcarts.com', pay_terms: 'Net 30', deposit_percent: 30 },
+      { id: 'v-techsource', name: 'TechSource', email: 'sales@techsource.io', pay_terms: 'Net 15', deposit_percent: 0 },
+      { id: 'v-ourmdm', name: 'Our MDM', email: 'billing@ourmdm.com', pay_terms: 'Prepaid', deposit_percent: 0 },
+      { id: 'v-basketco', name: 'BasketCo Supply', email: 'hello@basketco.com', pay_terms: 'Net 30', deposit_percent: 0 },
+    ],
+    // trackable = prompts (optionally) for asset info on receipt. Per supervisor R2: Laptops + Trivia Equipment.
+    itemTypes: [
+      { id: 't-tablet', name: 'Tablet', trackable: false }, { id: 't-cart', name: 'Cart', trackable: false },
+      { id: 't-basket', name: 'Basket', trackable: false }, { id: 't-mdm', name: 'Our MDM', trackable: false },
+      { id: 't-mount', name: 'Mount', trackable: false }, { id: 't-laptop', name: 'Laptop', trackable: true },
+      { id: 't-trivia', name: 'Trivia Equipment', trackable: true },
+    ],
+    items,
+    // Groups are first-class ITEMS (numeric sku, live in the same inventory list). Members: single items OR nested groups.
+    groups: [
+      { id: 'g-starter', sku: '100009', name: 'Starter Kit A', description: 'Tablet + mount + stylus + basket + MDM.', is_active: true, is_group: true,
+        members: [{ kind: 'item', ref_id: 'i-tab', qty: 1 }, { kind: 'item', ref_id: 'i-mount', qty: 1 }, { kind: 'item', ref_id: 'i-stylus', qty: 1 }, { kind: 'item', ref_id: 'i-basket', qty: 2 }, { kind: 'item', ref_id: 'i-mdm', qty: 1 }] },
+      { id: 'g-tabmount', sku: '100010', name: 'Tablet + Mount', description: 'Two-item bundle.', is_active: true, is_group: true,
+        members: [{ kind: 'item', ref_id: 'i-tab', qty: 1 }, { kind: 'item', ref_id: 'i-mount', qty: 1 }] },
+      { id: 'g-facility', sku: '100011', name: 'Facility Onboard Bundle', description: 'Nested: Starter Kit A (group) + 1 cart + 1 laptop.', is_active: true, is_group: true,
+        members: [{ kind: 'group', ref_id: 'g-starter', qty: 1 }, { kind: 'item', ref_id: 'i-cart', qty: 1 }, { kind: 'item', ref_id: 'i-laptop', qty: 1 }] },
+    ],
+    // Assembled carts (Inventory ▸ Carts) — mirror of warehouse assets. components capture FIFO cost.
+    carts: [
+      { id: 'c-1', code: 'CART-A-0188', cart_type: 'Standard', status: 'Available', location: 'Warehouse', facility_id: null, cost: 0, components: [] },
+    ],
+    stockLogs: [
+      { id: uid('l'), vendor_item_id: 'i-tab', kind: 'in', qty: 24, source_label: 'Purchase Order', ref: 'PO-2026-0190', reason: null, created_at: '2026-06-11T10:12:00' },
+      { id: uid('l'), vendor_item_id: 'i-cart', kind: 'in', qty: 10, source_label: 'PO Receiving', ref: 'RO-2026-0042', reason: null, created_at: '2026-06-12T09:30:00' },
+      { id: uid('l'), vendor_item_id: 'i-cart', kind: 'out', qty: 3, source_label: 'SO Shipment', ref: 'SO-2026-0138', reason: null, created_at: '2026-06-13T14:05:00' },
+    ],
+    facilities: [
+      { id: 'f-maple', name: 'Maple SNF', city: 'Lakewood, NJ', address: '120 Maple Ave, Lakewood, NJ 08701', regional_id: 'reg-rosa', provider: 'Dr. Priya Tan', care_companion: 'Carl Chen', regional: 'Rosa Diaz', floor_plan: 'maple_floorplan.pdf', onboard_date: '2026-06-16', carts_needed: 8, cart_shipment_date: '2026-06-16', status: 'Shipping', notes: '', messages: [], attachments: ['maple_floorplan.pdf'] },
+      { id: 'f-bayview', name: 'Bayview Center', city: 'Toms River, NJ', address: '88 Bay Blvd, Toms River, NJ 08753', regional_id: 'reg-rosa', provider: 'Dr. Kwesi Ofori', care_companion: 'Lena Ross', regional: 'Rosa Diaz', floor_plan: 'bayview_floorplan.pdf', onboard_date: '2026-06-17', carts_needed: 12, cart_shipment_date: '2026-06-18', status: 'Planned', notes: '', messages: [], attachments: ['bayview_floorplan.pdf'] },
+      { id: 'f-cedar', name: 'Cedar Grove', city: 'Brick, NJ', address: '15 Cedar Rd, Brick, NJ 08723', regional_id: 'reg-tim', provider: 'Dr. Maya Singh', care_companion: 'Omar Vance', regional: 'Tim Boyd', floor_plan: null, onboard_date: '2026-06-22', carts_needed: null, cart_shipment_date: null, status: 'Onboarding', notes: '', messages: [], attachments: [] },
+      { id: 'f-river', name: 'Riverside Care', city: 'Red Bank, NJ', address: '40 River St, Red Bank, NJ 07701', regional_id: 'reg-tim', provider: 'Dr. Alan Pierce', care_companion: 'Nina Park', regional: 'Tim Boyd', floor_plan: 'riverside_floorplan.pdf', onboard_date: '2026-06-25', carts_needed: null, cart_shipment_date: null, status: 'Onboarding', notes: '', messages: [], attachments: ['riverside_floorplan.pdf'] },
+    ],
+    regionals: [
+      { id: 'reg-rosa', name: 'Rosa Diaz', area: 'NJ — North', email: 'rosa.diaz@carease.com', address: '200 North Office Pkwy, Newark, NJ 07102' },
+      { id: 'reg-tim', name: 'Tim Boyd', area: 'NJ — South', email: 'tim.boyd@carease.com', address: '15 South Center Dr, Cherry Hill, NJ 08002' },
+    ],
+    facilityAssets: [
+      { id: uid('fa'), facility_id: 'f-maple', item: 'Care Cart — Standard', asset_tag: 'CRT-A-0188', qty: 8, assigned: '2026-06-12', status: 'Active' },
+      { id: uid('fa'), facility_id: 'f-bayview', item: 'Care Cart — Standard', asset_tag: 'CRT-A-0190', qty: 12, assigned: '2026-06-14', status: 'In transit' },
+    ],
+    userAssets: [
+      { id: uid('ua'), user: 'Carl Chen', facility: 'Maple SNF', item: 'Dell Latitude Laptop', item_type: 'Laptop', asset_tag: 'LAP-U-3001', serial: 'DL5-6610', cost: 920, assigned: '2026-06-10', status: 'Active' },
+      { id: uid('ua'), user: 'Omar Vance', facility: 'Cedar Grove', item: 'Trivia Machine (Portable)', item_type: 'Trivia Equipment', asset_tag: 'TRV-U-3002', serial: 'TRV-2231', cost: 350, assigned: '2026-06-12', status: 'Active' },
+    ],
+    // Tracked assets created when a trackable item is received on a PO (serialized).
+    trackedAssets: [
+      { id: uid('ta'), item: 'Dell Latitude Laptop', item_type: 'Laptop', asset_tag: 'LAP-A-2208', serial: 'DL5-7721', status: 'In warehouse', received_at: '2026-05-28', po: 'opening' },
+    ],
+    users: [
+      { id: 'u-rosa', name: 'Rosa Diaz', role: 'Regional Director', program: 'Regional', facility: 'NJ — North', email: 'rosa.diaz@carease.com', address: '200 North Office Pkwy, Newark, NJ 07102' },
+      { id: 'u-carl', name: 'Carl Chen', role: 'Care Companion', program: 'APCM', facility: 'Maple SNF', email: 'carl.chen@carease.com', address: '120 Maple Ave, Lakewood, NJ 08701' },
+      { id: 'u-priya', name: 'Priya Tan', role: 'Provider', program: 'CoCM', facility: 'Bayview Center', email: 'priya.tan@carease.com', address: '88 Bay Blvd, Toms River, NJ 08753' },
+      { id: 'u-omar', name: 'Omar Vance', role: 'Care Companion', program: 'APCM', facility: 'Cedar Grove', email: 'omar.vance@carease.com', address: '15 Cedar Rd, Brick, NJ 08723' },
+      { id: 'u-tim', name: 'Tim Boyd', role: 'Regional Director', program: 'Regional', facility: 'NJ — South', email: 'tim.boyd@carease.com', address: '15 South Center Dr, Cherry Hill, NJ 08002' },
+      { id: 'u-shaya', name: 'Shaya Karmel', role: 'Care Companion', program: 'APCM', facility: 'Riverside Care', email: 'shaya.karmel@carease.com', address: '40 River St, Red Bank, NJ 07701' },
+      { id: 'u-malky', name: 'Malky Locker', role: 'Warehouse Manager', program: 'Warehouse', facility: 'All facilities', email: 'malky.locker@carease.com', address: '1 Warehouse Way, Lakewood, NJ 08701' },
+    ],
+    tickets: [
+      { id: '#4821', priority: 'High', subject: 'BOL missing — Maple SNF receipt', kind: 'assigned' },
+      { id: '#4830', priority: 'Medium', subject: 'Confirm cart count — Bayview', kind: 'assigned' },
+      { id: '#4811', priority: 'Support', subject: 'Tablet swap request — Cedar Grove', kind: 'support' },
+      { id: '#4799', priority: 'Low', subject: 'Update MDM enrollment batch', kind: 'system' },
+      { id: '#4840', priority: 'Medium', subject: 'Floor plan re-upload — Riverside', kind: 'system' },
+    ],
+    regionalSchedule: [
+      { date: '2026-06-15', label: 'Regional sync' },
+      { date: '2026-06-19', label: 'Regional visit — Bayview' },
+      { date: '2026-06-26', label: 'Regional sync' },
+    ],
+    purchaseOrders: [
+      { id: 'po-188', po_number: 'PO-2026-0188', vendor_id: 'v-medcarts', multi_vendor: false, order_date: '2026-06-08', expected_date: '2026-06-20', status: 'partial', progress: 'Shipping', sent: null, notes: 'Standard carts for June onboards.', landed_costs: [], payments: [], deposit: 0,
+        items: [{ id: uid('pol'), vendor_item_id: 'i-cart', name: 'Care Cart — Standard', vendor_id: 'v-medcarts', qty: 10, qty_received: 5, unit_cost: 640 }] },
+      { id: 'po-190', po_number: 'PO-2026-0190', vendor_id: 'v-techsource', multi_vendor: false, order_date: '2026-06-11', expected_date: '2026-06-24', status: 'open', progress: 'Deposit Sent', sent: null, notes: '', landed_costs: [], payments: [], deposit: 0,
+        items: [{ id: uid('pol'), vendor_item_id: 'i-tab', name: 'Samsung Galaxy Tab A9', vendor_id: 'v-techsource', qty: 24, qty_received: 0, unit_cost: 184 },
+                { id: uid('pol'), vendor_item_id: 'i-mount', name: 'Wall Mount Bracket', vendor_id: 'v-techsource', qty: 24, qty_received: 0, unit_cost: 19.75 }] },
+    ],
+    salesOrders: [
+      { id: 'so-142', so_number: 'SO-2026-0142', recipient_type: 'facility', recipient_id: 'f-maple', ship_to_type: 'facility', regional_id: null, facility_id: 'f-maple', order_date: '2026-06-09', expected_date: '2026-06-16', delivery_method: 'Freight', shipping_address: 'Maple SNF · 120 Maple Ave, Lakewood, NJ 08701', shipping_cost: 120, landed_costs: [], status: 'in_progress', notes: '', backorder_of: null, attachments: [{ id: uid('att'), name: 'BOL-SO-2026-0142.pdf', kind: 'BOL', at: '2026-06-13T09:00:00' }, { id: uid('att'), name: 'POD-Maple-carts.jpg', kind: 'Proof of delivery', at: '2026-06-14T15:00:00' }],
+        items: [{ vendor_item_id: 'i-cart', name: 'Care Cart — Standard', facility_id: 'f-maple', qty: 4, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 640 }, { vendor_item_id: 'i-basket', name: 'Supply Basket', facility_id: 'f-maple', qty: 8, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 28.5 }], groups: [] },
+      { id: 'so-145', so_number: 'SO-2026-0145', recipient_type: 'facility', recipient_id: 'f-bayview', ship_to_type: 'facility', regional_id: null, facility_id: 'f-bayview', order_date: '2026-06-12', expected_date: '2026-06-19', delivery_method: 'Courier', shipping_address: 'Bayview Center · 88 Bay Blvd, Toms River, NJ 08753', shipping_cost: 95, landed_costs: [], status: 'draft', notes: '', backorder_of: null, attachments: [],
+        items: [{ vendor_item_id: 'i-tab', name: 'Samsung Galaxy Tab A9', facility_id: 'f-bayview', qty: 12, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 184 }], groups: [] },
+    ],
+    cartReceipts: [],
+    vendorBills: [],
+    shipments: [],     // combined shipments (S3)
+    returns: [],       // asset return orders (R1–R4)
+    emails: [],        // simulated sent/notification log
+
+    // --- Role & Permissions (unchanged) ---
+    roles: [
+      { id: 'warehouse-manager', name: 'Warehouse Manager', model_user: 'Malky Locker', derived_from: null, renamed_from: 'Manager', custom: false },
+    ],
+    employeeRoleCreated: false,
+    capabilities: [
+      { id: 'cap-1', group: 'Facilities (global)', label: 'View all facilities (dedicated Facilities tab)', grant: 'yes', note: 'Sees every facility, its providers, Care Companions, regionals', employee: true },
+      { id: 'cap-2', group: 'Facilities (global)', label: 'View all users', grant: 'yes', note: 'All users regardless of program', employee: false },
+      { id: 'cap-3', group: 'Facility Onboarding', label: 'View facility in the onboarding pipeline', grant: 'yes', note: '', employee: true },
+      { id: 'cap-4', group: 'Facility Onboarding', label: 'Fill in & manage facility custom fields', grant: 'yes', note: 'Includes the carts-needed field', employee: true },
+      { id: 'cap-5', group: 'Facility Onboarding', label: 'Edit facility onboarding details (custom fields)', grant: 'yes', note: 'Needed to edit the cart fields', employee: false },
+      { id: 'cap-6', group: 'Facility Onboarding', label: 'Edit notes on facility onboarding', grant: 'yes', note: '', employee: true },
+      { id: 'cap-7', group: 'Facility Onboarding', label: 'Upload & manage facility attachments', grant: 'yes', note: 'Cart shipping info / BOL / photos', employee: true },
+      { id: 'cap-8', group: 'Facility Onboarding', label: 'Send message on a facility record', grant: 'yes', note: '', employee: true },
+      { id: 'cap-9', group: 'Facility Onboarding', label: 'Manage facility context during onboarding', grant: 'no', note: '', employee: false },
+      { id: 'cap-10', group: 'Facility Onboarding', label: "Change a facility's onboarding status", grant: 'no', note: 'Owned by another department', employee: false },
+      { id: 'cap-11', group: 'Facility Onboarding', label: 'Add a new facility to the pipeline', grant: 'no', note: '', employee: false },
+      { id: 'cap-12', group: 'Facility Onboarding', label: 'Delete a facility from the pipeline', grant: 'no', note: '', employee: false },
+      { id: 'cap-13', group: 'Sales Onboarding', label: 'View sales in the pipeline', grant: 'no', note: 'No sales onboarding access at all', employee: false },
+      { id: 'cap-13b', group: 'Sales Onboarding', label: 'Add new leads / add sales records', grant: 'no', note: '', employee: false },
+      { id: 'cap-13c', group: 'Sales Onboarding', label: 'Edit sales onboarding records', grant: 'no', note: '', employee: false },
+      { id: 'cap-13d', group: 'Sales Onboarding', label: 'Add notes / manage contact / update status', grant: 'no', note: '', employee: false },
+      { id: 'cap-13e', group: 'Sales Onboarding', label: 'Delete sales onboarding records', grant: 'no', note: '', employee: false },
+      { id: 'cap-14', group: 'Programs', label: 'APCM program access', grant: 'no', note: 'Nothing APCM-specific is needed', employee: false },
+      { id: 'cap-15', group: 'Programs', label: 'CoCM program access', grant: 'no', note: 'Nothing CoCM-specific is needed', employee: false },
+      { id: 'cap-16', group: 'Regional', label: 'Regional Director dashboard (their own view)', grant: 'no', note: 'She gets her own dashboard instead', employee: false },
+      { id: 'cap-17', group: 'Regional', label: 'See / access the regional schedule', grant: 'yes', note: 'Surfaced inside her view', employee: false },
+      { id: 'cap-18', group: 'Regional', label: 'Access to calendars', grant: 'yes', note: '', employee: true },
+      { id: 'cap-19', group: 'Tasks & Tickets', label: 'View tickets assigned to her', grant: 'yes', note: '', employee: true },
+      { id: 'cap-20', group: 'Tasks & Tickets', label: 'View all tickets in the system', grant: 'yes', note: '', employee: false },
+      { id: 'cap-21', group: 'Tasks & Tickets', label: 'View support tickets', grant: 'yes', note: '', employee: true },
+      { id: 'cap-22', group: 'Tasks & Tickets', label: 'Admin view on all support tickets', grant: 'confirm', note: 'Likely yes — confirm if enabled', employee: false },
+      { id: 'cap-23', group: 'Purchasing & Assets', label: 'View & manage purchase orders', grant: 'yes', note: '', employee: false },
+      { id: 'cap-24', group: 'Purchasing & Assets', label: 'Assets — all asset items', grant: 'yes', note: 'Full asset visibility', employee: true },
+      { id: 'cap-25', group: 'User Management', label: 'Add / remove users within warehouse', grant: 'partial', note: 'Warehouse scope only — not global removal', employee: false },
+      { id: 'cap-26', group: 'User Management', label: 'Admin dashboard access', grant: 'confirm', note: 'Needed to a degree — scope to be defined', employee: false },
+      { id: 'cap-27', group: 'System Settings', label: 'Manage condition triggers', grant: 'no', note: 'Administrator-only', employee: false },
+      { id: 'cap-28', group: 'System Settings', label: 'Manage notification template emails', grant: 'no', note: 'Administrator-only', employee: false },
+      { id: 'cap-29', group: 'Open / Cross-cutting', label: 'Geolocation / geo-capping permission', grant: 'confirm', note: 'Removed? Location only worked in-app — clarify', employee: false },
+    ],
+  };
+  /* ------------------------------------------------------------------ V4 mock-data depth (additive only — existing ids unchanged) */
+  db.vendors.push(
+    { id: 'v-edan', name: 'EDAN Medical', email: 'orders@edan.com', pay_terms: 'Net 30', deposit_percent: 50 },
+    { id: 'v-accutor', name: 'Accutor Devices', email: 'sales@accutor.com', pay_terms: 'Net 15', deposit_percent: 25 },
+    { id: 'v-cables', name: 'CablesPlus', email: 'hello@cablesplus.com', pay_terms: 'Prepaid', deposit_percent: 0 },
+  );
+  db.itemTypes.push(
+    { id: 't-gameshow', name: 'Gameshow', trackable: true },
+    { id: 't-cable', name: 'Cable', trackable: false },
+    { id: 't-bp', name: 'BP Device', trackable: false },
+    { id: 't-key', name: 'Key', trackable: false },
+    { id: 't-spo2', name: 'SPO2 Sensor', trackable: false },
+  );
+  db.items.push(
+    { id: 'i-tab2', sku: '100012', name: 'Samsung Galaxy Tab A9 (Gen2)', vendor_id: 'v-techsource', item_type_id: 't-tablet', cost: 188.0, threshold: 20, bin_location: 'A-16', is_active: true, lots: mkLots([{ q: 40, c: 188.0, d: '2026-06-10' }]) },
+    { id: 'i-laptop2', sku: '100013', name: 'HP ProBook Laptop', vendor_id: 'v-techsource', item_type_id: 't-laptop', cost: 870.0, threshold: 5, bin_location: 'D-03', is_active: true, lots: mkLots([{ q: 8, c: 860.0, d: '2026-06-04' }]) },
+    { id: 'i-gameshow', sku: '100014', name: 'Trivia Gameshow Console', vendor_id: 'v-techsource', item_type_id: 't-gameshow', cost: 410.0, threshold: 4, bin_location: 'D-04', is_active: true, lots: mkLots([{ q: 12, c: 400.0, d: '2026-06-02' }]) },
+    { id: 'i-cable-usb', sku: '100015', name: 'USB-C Cable', vendor_id: 'v-cables', item_type_id: 't-cable', cost: 6.5, threshold: 100, bin_location: 'B-10', is_active: true, lots: mkLots([{ q: 300, c: 6.0, d: '2026-06-05' }]) },
+    { id: 'i-cable-pwr', sku: '100016', name: 'Power Cable', vendor_id: 'v-cables', item_type_id: 't-cable', cost: 8.0, threshold: 80, bin_location: 'B-11', is_active: true, lots: mkLots([{ q: 200, c: 7.5, d: '2026-06-05' }]) },
+    { id: 'i-spo2', sku: '100017', name: 'SPO2 Sensor', vendor_id: 'v-edan', item_type_id: 't-spo2', cost: 35.0, threshold: 30, bin_location: 'E-01', is_active: true, lots: mkLots([{ q: 80, c: 34.0, d: '2026-06-07' }]) },
+    { id: 'i-bphose', sku: '100018', name: 'BP Hose', vendor_id: 'v-edan', item_type_id: 't-bp', cost: 12.0, threshold: 40, bin_location: 'E-02', is_active: true, lots: mkLots([{ q: 120, c: 11.5, d: '2026-06-07' }]) },
+    { id: 'i-bpdev', sku: '100019', name: 'VS8 BP Device', vendor_id: 'v-edan', item_type_id: 't-bp', cost: 220.0, threshold: 10, bin_location: 'E-03', is_active: true, lots: mkLots([{ q: 30, c: 210.0, d: '2026-06-08' }]) },
+    { id: 'i-edancart', sku: '100020', name: 'EDAN Cart Frame', vendor_id: 'v-edan', item_type_id: 't-cart', cost: 480.0, threshold: 6, bin_location: 'C-04', is_active: true, lots: mkLots([{ q: 15, c: 470.0, d: '2026-06-09' }]) },
+    { id: 'i-key', sku: '100021', name: 'CTA Cart Key', vendor_id: 'v-edan', item_type_id: 't-key', cost: 9.0, threshold: 20, bin_location: 'C-05', is_active: true, lots: mkLots([{ q: 60, c: 9.0, d: '2026-06-09' }]) },
+    { id: 'i-accutor', sku: '100022', name: 'Accutor BP Monitor', vendor_id: 'v-accutor', item_type_id: 't-bp', cost: 260.0, threshold: 8, bin_location: 'E-04', is_active: true, lots: mkLots([{ q: 18, c: 255.0, d: '2026-06-06' }]) },
+    { id: 'i-basket2', sku: '100023', name: 'Supply Basket (Large)', vendor_id: 'v-basketco', item_type_id: 't-basket', cost: 34.0, threshold: 30, bin_location: 'B-08', is_active: true, lots: mkLots([{ q: 90, c: 33.0, d: '2026-06-09' }]) },
+  );
+  db.groups.push(
+    { id: 'g-vs8bp', sku: '100024', name: 'VS8 BP Device Kit', description: 'BP device + hose + SPO2 sensor.', is_active: true, is_group: true,
+      members: [{ kind: 'item', ref_id: 'i-bpdev', qty: 1 }, { kind: 'item', ref_id: 'i-bphose', qty: 1 }, { kind: 'item', ref_id: 'i-spo2', qty: 1 }] },
+    { id: 'g-cta', sku: '100025', name: 'CTA Cart Kit', description: 'EDAN cart frame + key + large basket.', is_active: true, is_group: true,
+      members: [{ kind: 'item', ref_id: 'i-edancart', qty: 1 }, { kind: 'item', ref_id: 'i-key', qty: 1 }, { kind: 'item', ref_id: 'i-basket2', qty: 1 }] },
+    { id: 'g-edanstarter', sku: '100026', name: 'EDAN Starter Bundle', description: 'Nested: CTA Cart Kit + tablet + 2 USB cables.', is_active: true, is_group: true,
+      members: [{ kind: 'group', ref_id: 'g-cta', qty: 1 }, { kind: 'item', ref_id: 'i-tab2', qty: 1 }, { kind: 'item', ref_id: 'i-cable-usb', qty: 2 }] },
+  );
+  db.regionals.push({ id: 'reg-ana', name: 'Ana Reyes', area: 'NJ — Central', email: 'ana.reyes@carease.com', address: '9 Central Plaza, Freehold, NJ 07728' });
+  db.facilities.push(
+    { id: 'f-oak', name: 'Oakwood SNF', city: 'Jackson, NJ', address: '12 Oak Ln, Jackson, NJ 08527', regional_id: 'reg-ana', provider: 'Dr. Lina Cho', care_companion: 'Dana White', regional: 'Ana Reyes', floor_plan: 'oakwood_floorplan.pdf', onboard_date: '2026-06-23', carts_needed: 6, cart_shipment_date: '2026-06-24', status: 'Shipping', notes: '', messages: [], attachments: ['oakwood_floorplan.pdf'] },
+    { id: 'f-pine', name: 'Pinegrove Center', city: 'Brick, NJ', address: '77 Pine St, Brick, NJ 08724', regional_id: 'reg-tim', provider: 'Dr. Owen Hale', care_companion: 'Lee Park', regional: 'Tim Boyd', floor_plan: null, onboard_date: '2026-06-29', carts_needed: null, cart_shipment_date: null, status: 'Onboarding', notes: '', messages: [], attachments: [] },
+    { id: 'f-harbor', name: 'Harborview Care', city: 'Long Branch, NJ', address: '5 Harbor Rd, Long Branch, NJ 07740', regional_id: 'reg-ana', provider: 'Dr. Sara Lin', care_companion: 'Mia Tran', regional: 'Ana Reyes', floor_plan: 'harborview_floorplan.pdf', onboard_date: '2026-07-02', carts_needed: 10, cart_shipment_date: null, status: 'Planned', notes: '', messages: [], attachments: ['harborview_floorplan.pdf'] },
+  );
+  db.users.push(
+    { id: 'u-dana', name: 'Dana White', role: 'Care Companion', program: 'APCM', facility: 'Oakwood SNF', email: 'dana.white@carease.com', address: '12 Oak Ln, Jackson, NJ 08527' },
+    { id: 'u-lee', name: 'Lee Park', role: 'Provider', program: 'CoCM', facility: 'Pinegrove Center', email: 'lee.park@carease.com', address: '77 Pine St, Brick, NJ 08724' },
+    { id: 'u-wh2', name: 'Yossi Klein', role: 'Warehouse Employee', program: 'Warehouse', facility: 'All facilities', email: 'yossi.klein@carease.com', address: '1 Warehouse Way, Lakewood, NJ 08701' },
+    { id: 'u-wh3', name: 'Rivka Stern', role: 'Warehouse Employee', program: 'Warehouse', facility: 'All facilities', email: 'rivka.stern@carease.com', address: '1 Warehouse Way, Lakewood, NJ 08701' },
+  );
+  db.carts.push(
+    { id: 'c-2', code: 'CART-A-0189', cart_type: 'Standard', status: 'Available', location: 'Warehouse', facility_id: null, cost: 0, components: [] },
+    { id: 'c-3', code: 'CART-V-0001', assembly_id: 'asm-vs8', cart_type: 'CTA Cart', key_type: 'CTA Key', bp_device: 'VS8', cart_color: 'Graphite', tablet_number: 'TBL-0001', status: 'Assigned', location: 'Facility', facility_id: 'f-maple', regional_id: 'reg-rosa', cost: 255.5, components: [{ vendor_item_id: 'i-bpdev', name: 'VS8 BP Device', qty: 1, unit_cost: 210 }, { vendor_item_id: 'i-bphose', name: 'BP Hose', qty: 1, unit_cost: 11.5 }, { vendor_item_id: 'i-spo2', name: 'SPO2 Sensor', qty: 1, unit_cost: 34 }] },
+    { id: 'c-4', code: 'CART-E-0001', assembly_id: 'asm-edan', cart_type: 'EDAN Cart', key_type: 'EDAN Key', bp_device: '—', cart_color: 'White', tablet_number: 'TBL-0002', status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, cost: 512, components: [{ vendor_item_id: 'i-edancart', name: 'EDAN Cart Frame', qty: 1, unit_cost: 470 }, { vendor_item_id: 'i-key', name: 'CTA Cart Key', qty: 1, unit_cost: 9 }, { vendor_item_id: 'i-basket2', name: 'Supply Basket (Large)', qty: 1, unit_cost: 33 }] },
+  );
+  db.trackedAssets.push(
+    { id: uid('ta'), item: 'HP ProBook Laptop', item_type: 'Laptop', asset_tag: 'LAP-A-2211', serial: 'HP-9001', status: 'In warehouse', received_at: '2026-06-10', po: 'opening' },
+    { id: uid('ta'), item: 'Trivia Gameshow Console', item_type: 'Gameshow', asset_tag: 'GMS-A-2212', serial: 'GMS-77', status: 'In warehouse', received_at: '2026-06-12', po: 'opening' },
+  );
+  db.facilityAssets.push({ id: uid('fa'), facility_id: 'f-oak', item: 'Care Cart — Standard', asset_tag: 'CRT-A-0191', qty: 6, assigned: '2026-06-20', status: 'In transit' });
+  db.userAssets.push({ id: uid('ua'), user: 'Dana White', facility: 'Oakwood SNF', item: 'HP ProBook Laptop', item_type: 'Laptop', asset_tag: 'LAP-U-3003', serial: '', cost: 870, assigned: '2026-06-19', status: 'Active' });
+  db.tickets.push(
+    { id: '#4852', priority: 'High', subject: 'EDAN cart key missing — Oakwood', kind: 'assigned' },
+    { id: '#4861', priority: 'Low', subject: 'Cable reorder — Central region', kind: 'system' },
+    { id: '#4870', priority: 'Support', subject: 'Gameshow console swap — Pinegrove', kind: 'support' },
+  );
+  db.regionalSchedule.push({ date: '2026-06-24', label: 'Regional visit — Oakwood' }, { date: '2026-07-01', label: 'Regional sync (Central)' });
+  db.purchaseOrders.push(
+    { id: 'po-191', po_number: 'PO-2026-0191', vendor_id: 'v-edan', order_date: '2026-06-18', expected_date: '2026-06-30', status: 'open', progress: 'Deposit Sent', sent: null, notes: 'EDAN carts + keys for July onboards.', landed_costs: [{ id: uid('lc'), label: 'Freight', amount: 150 }], payments: [{ id: uid('pay'), amount: 2395, original_amount: 2395, edited: false, file: '', note: 'Deposit', at: '2026-06-18T10:00:00' }], deposit: 2395,
+      items: [{ id: uid('pol'), kind: 'item', vendor_item_id: 'i-edancart', name: 'EDAN Cart Frame', qty: 10, qty_received: 0, unit_cost: 470 }, { id: uid('pol'), kind: 'item', vendor_item_id: 'i-key', name: 'CTA Cart Key', qty: 10, qty_received: 0, unit_cost: 9 }] },
+    { id: 'po-192', po_number: 'PO-2026-0192', vendor_id: 'v-techsource', order_date: '2026-06-15', expected_date: '2026-06-26', status: 'partial', progress: 'Shipping', sent: null, notes: '', landed_costs: [], payments: [], deposit: 0,
+      items: [{ id: uid('pol'), kind: 'item', vendor_item_id: 'i-tab2', name: 'Samsung Galaxy Tab A9 (Gen2)', qty: 20, qty_received: 10, unit_cost: 188 }, { id: uid('pol'), kind: 'item', vendor_item_id: 'i-gameshow', name: 'Trivia Gameshow Console', qty: 12, qty_received: 0, unit_cost: 400 }] },
+    { id: 'po-193', po_number: 'PO-2026-0193', vendor_id: 'v-edan', order_date: '2026-06-19', expected_date: '2026-07-01', status: 'open', progress: 'Not started', sent: null, notes: 'VS8 BP device kits (group line).', landed_costs: [], payments: [], deposit: 0,
+      items: [{ id: uid('pol'), kind: 'group', group_id: 'g-vs8bp', name: 'VS8 BP Device Kit', qty: 5, qty_received: 0, members: [{ vendor_item_id: 'i-bpdev', name: 'VS8 BP Device', per_group: 1, unit_cost: 210 }, { vendor_item_id: 'i-bphose', name: 'BP Hose', per_group: 1, unit_cost: 11.5 }, { vendor_item_id: 'i-spo2', name: 'SPO2 Sensor', per_group: 1, unit_cost: 34 }] }] },
+    { id: 'po-194', po_number: 'PO-2026-0194', vendor_id: 'v-accutor', order_date: '2026-06-20', expected_date: '2026-07-03', status: 'open', progress: 'Not started', sent: null, notes: '', landed_costs: [], payments: [], deposit: 1147.5,
+      items: [{ id: uid('pol'), kind: 'item', vendor_item_id: 'i-accutor', name: 'Accutor BP Monitor', qty: 18, qty_received: 0, unit_cost: 255 }] },
+  );
+  db.salesOrders.push(
+    { id: 'so-150', so_number: 'SO-2026-0150', recipient_type: 'facility', recipient_id: 'f-oak', ship_to_type: 'facility', regional_id: null, facility_id: 'f-oak', order_date: '2026-06-20', expected_date: '2026-06-27', delivery_method: 'Freight', shipping_address: 'Oakwood SNF · 12 Oak Ln, Jackson, NJ 08527', shipping_cost: 110, landed_costs: [], status: 'draft', notes: '', backorder_of: null, attachments: [], groups: [],
+      items: [{ kind: 'item', vendor_item_id: 'i-tab2', name: 'Samsung Galaxy Tab A9 (Gen2)', facility_id: 'f-oak', qty: 6, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 188 }, { kind: 'item', vendor_item_id: 'i-cable-usb', name: 'USB-C Cable', facility_id: 'f-oak', qty: 6, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 6 }] },
+    { id: 'so-151', so_number: 'SO-2026-0151', recipient_type: 'regional', recipient_id: 'reg-ana', ship_to_type: 'regional', regional_id: 'reg-ana', facility_id: 'f-oak', order_date: '2026-06-21', expected_date: '2026-06-28', delivery_method: 'Courier', shipping_address: 'Ana Reyes · 9 Central Plaza, Freehold, NJ 07728', shipping_cost: 60, landed_costs: [], status: 'in_progress', notes: '', backorder_of: null, attachments: [], groups: [],
+      items: [{ kind: 'item', vendor_item_id: 'i-basket2', name: 'Supply Basket (Large)', facility_id: 'f-oak', qty: 10, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 33 }] },
+    { id: 'so-152', so_number: 'SO-2026-0152', recipient_type: 'employee', recipient_id: 'u-dana', ship_to_type: 'facility', regional_id: null, facility_id: 'f-oak', order_date: '2026-06-21', expected_date: '2026-06-25', delivery_method: 'Courier', shipping_address: 'Oakwood SNF · 12 Oak Ln, Jackson, NJ 08527', shipping_cost: 0, landed_costs: [], status: 'in_progress', notes: '', backorder_of: null, attachments: [], groups: [],
+      items: [{ kind: 'item', vendor_item_id: 'i-laptop2', name: 'HP ProBook Laptop', facility_id: 'f-oak', qty: 1, qty_shipped: 0, shipped_cost_total: 0, unit_cost: 860 }] },
+    { id: 'so-153', so_number: 'SO-2026-0153', recipient_type: 'facility', recipient_id: 'f-harbor', ship_to_type: 'facility', regional_id: null, facility_id: 'f-harbor', order_date: '2026-06-22', expected_date: '2026-07-05', delivery_method: 'Freight', shipping_address: 'Harborview Care · 5 Harbor Rd, Long Branch, NJ 07740', shipping_cost: 130, landed_costs: [], status: 'draft', notes: '', backorder_of: null, attachments: [], groups: [],
+      items: [{ kind: 'group', group_id: 'g-cta', name: 'CTA Cart Kit', facility_id: 'f-harbor', qty: 3, qty_shipped: 0, shipped_cost_total: 0, members: [{ vendor_item_id: 'i-edancart', name: 'EDAN Cart Frame', per_group: 1 }, { vendor_item_id: 'i-key', name: 'CTA Cart Key', per_group: 1 }, { vendor_item_id: 'i-basket2', name: 'Supply Basket (Large)', per_group: 1 }] }] },
+  );
+  db.assemblyTypes = [
+    { id: 'at-edan', name: 'EDAN cart' },
+    { id: 'at-vs8', name: 'VS8 cart' },
+    { id: 'at-accutor', name: 'Accutor cart' },
+  ];
+  db.assemblies = [
+    { id: 'asm-vs8', sku: '100027', name: 'VS8 Cart', assembly_type_id: 'at-vs8', is_active: true, is_assembly: true,
+      composition: [{ kind: 'group', ref_id: 'g-cta', qty: 1 }, { kind: 'group', ref_id: 'g-vs8bp', qty: 1 }, { kind: 'item', ref_id: 'i-tab2', qty: 1 }],
+      asset_defaults: { cart_type: 'CTA Cart', key_type: 'CTA Key', bp_device: 'VS8' } },
+    { id: 'asm-edan', sku: '100028', name: 'EDAN Cart', assembly_type_id: 'at-edan', is_active: true, is_assembly: true,
+      composition: [{ kind: 'group', ref_id: 'g-cta', qty: 1 }, { kind: 'item', ref_id: 'i-tab', qty: 1 }],
+      asset_defaults: { cart_type: 'EDAN Cart', key_type: 'EDAN Key', bp_device: '—' } },
+    { id: 'asm-accutor', sku: '100029', name: 'Accutor Cart', assembly_type_id: 'at-accutor', is_active: true, is_assembly: true,
+      composition: [{ kind: 'group', ref_id: 'g-cta', qty: 1 }, { kind: 'item', ref_id: 'i-accutor', qty: 1 }],
+      asset_defaults: { cart_type: 'Accutor Cart', key_type: 'Accutor Key', bp_device: 'Accutor' } },
+  ];
+  db.poDraft = [];
+  db.items.push(
+    { id: 'i-charger', sku: '100030', name: 'USB-C Charger 45W', vendor_id: 'v-techsource', item_type_id: 't-cable', cost: 18.0, threshold: 60, bin_location: 'B-12', is_active: true, lots: mkLots([{ q: 150, c: 17.0, d: '2026-06-05' }]) },
+    { id: 'i-screen', sku: '100031', name: 'Tablet Screen Protector', vendor_id: 'v-techsource', item_type_id: 't-mount', cost: 5.0, threshold: 50, bin_location: 'A-17', is_active: true, lots: mkLots([{ q: 30, c: 4.5, d: '2026-06-05' }]) },
+    { id: 'i-wipes', sku: '100032', name: 'Sanitizing Wipes (tub)', vendor_id: 'v-basketco', item_type_id: 't-basket', cost: 7.0, threshold: 40, bin_location: 'B-13', is_active: true, lots: mkLots([{ q: 25, c: 6.5, d: '2026-06-08' }]) },
+  );
+  const _oak = db.facilities.find((f) => f.id === 'f-oak'); if (_oak) _oak._new_ship = true;
+  const _harbor = db.facilities.find((f) => f.id === 'f-harbor'); if (_harbor) _harbor._new_onb = true;
+  db.regionalSchedule.push({ date: '2026-06-25', label: 'New: cart audit — Cedar Grove', new: true });
+  db.cartReceipts.push({ id: 'rcpt-1', facility_id: 'f-maple', shipped_qty: 8, shipment_date: '2026-06-16', received_on: '2026-06-16', bol_name: 'BOL-Maple-carts.pdf', photos: ['maple-dock-1.jpg', 'maple-dock-2.jpg'], _new: true });
+  db.vendorBills.push({ id: 'BILL-1001', vendor_id: 'v-medcarts', po_number: 'PO-2026-0188', receiving_no: 'RO-2026-0042', total: 3200, created_at: '2026-06-12T09:30:00', lines: [{ name: 'Care Cart — Standard', qty: 5, unit_cost: 640, landed: 0 }] });
+  db.emails.push(
+    { id: 'em-1', kind: 'PO to vendor', to: 'orders@medcarts.com', cc: '', subject: 'Purchase Order PO-2026-0188', at: '2026-06-08T10:00:00' },
+    { id: 'em-2', kind: 'Customer order', to: 'rosa.diaz@carease.com', cc: '', subject: 'Shipped — SO-2026-0142', at: '2026-06-14T15:00:00' },
+  );
+  db.returns.push(
+    { id: 'ret-1', ret_no: 'RET-2026-0041', source_type: 'facility', source_id: 'f-maple', source_label: 'Maple SNF', so_ref: 'SO-2026-0142', assets: [{ key: 'fa:seed1', kind: 'facility', label: 'Care Cart — Standard x2', asset_tag: 'CRT-A-0188', cost: 0 }], status: 'in_transit', refund_total: 0, replacement_charge: 0, created_at: '2026-06-15T09:00:00', received_at: null },
+    { id: 'ret-2', ret_no: 'RET-2026-0040', source_type: 'employee', source_id: 'u-omar', source_label: 'Omar Vance', so_ref: '', assets: [{ key: 'ua:seed1', kind: 'trivia', label: 'Trivia Machine (Portable) · Omar Vance', asset_tag: 'TRV-U-3002', cost: 350 }], status: 'received', refund_total: 350, replacement_charge: 0, created_at: '2026-06-13T10:00:00', received_at: '2026-06-14T12:00:00', charge_facility: '' },
+  );
+  db.activity = [
+    { id: 'ac-1', at: '2026-06-16T08:10:00', text: 'New facility added: Oakwood SNF', new: true },
+    { id: 'ac-2', at: '2026-06-16T08:25:00', text: 'Cart shipment scheduled: Oakwood SNF (6 carts)', new: true },
+    { id: 'ac-3', at: '2026-06-15T16:40:00', text: 'Return RET-2026-0041 started from Maple SNF', new: true },
+    { id: 'ac-4', at: '2026-06-14T15:02:00', text: 'Shipped SO-2026-0142 to Maple SNF', new: false },
+    { id: 'ac-5', at: '2026-06-12T09:31:00', text: 'Received PO-2026-0188 -> RO-2026-0042', new: false },
+    { id: 'ac-6', at: '2026-06-11T10:12:00', text: 'Adjusted stock: Supply Basket +5 (cycle count)', new: false },
+    { id: 'ac-7', at: '2026-06-10T13:00:00', text: 'Built VS8 Cart CART-V-0001', new: false },
+    { id: 'ac-8', at: '2026-06-08T10:00:00', text: 'Vendor added: EDAN Medical', new: false },
+  ];
+  db.notifications = [
+    { id: 'n-1', kind: 'inventory', title: 'Low stock alert', body: 'Care Cart — Standard is low (7 of 10 threshold). Consider reordering.', at: '2026-06-16T08:30:00', read: false, route: '/inventory' },
+    { id: 'n-2', kind: 'po', title: 'Deposit pending', body: 'A deposit is pending on PO-2026-0191 (EDAN Medical).', at: '2026-06-16T08:05:00', read: false, route: '/purchase-orders' },
+    { id: 'n-3', kind: 'dashboard', title: 'Cart shipment scheduled', body: '8 carts scheduled to ship to Maple SNF on 2026-06-16.', at: '2026-06-15T17:20:00', read: false, route: '/' },
+    { id: 'n-4', kind: 'so', title: 'Back order ready', body: 'A back order is ready to ship — items are back in stock.', at: '2026-06-15T14:10:00', read: false, route: '/sales-orders' },
+    { id: 'n-5', kind: 'returns', title: 'Return received', body: 'RET-2026-0040 received from Omar Vance — $350 refunded.', at: '2026-06-14T12:05:00', read: true, route: '/returns' },
+    { id: 'n-6', kind: 'so', title: 'BOL uploaded', body: 'BOL uploaded to SO-2026-0142 (Maple SNF).', at: '2026-06-14T09:00:00', read: true, route: '/sales-orders' },
+    { id: 'n-7', kind: 'dashboard', title: 'New facility onboarding', body: 'Harborview Care onboarding scheduled for 2026-07-02.', at: '2026-06-13T11:00:00', read: false, route: '/' },
+    { id: 'n-8', kind: 'po', title: 'Vendor terms updated', body: 'EDAN Medical payment terms changed to Net 60.', at: '2026-06-12T15:30:00', read: true, route: '/purchase-orders' },
+    { id: 'n-9', kind: 'assets', title: 'Asset assigned', body: 'Dell Latitude Laptop assigned to Carl Chen (Maple SNF).', at: '2026-06-10T10:20:00', read: true, route: '/assets' },
+    { id: 'n-10', kind: 'inventory', title: 'Low stock alert', body: 'Sanitizing Wipes (tub) is low (25 of 40 threshold).', at: '2026-06-09T16:00:00', read: false, route: '/inventory' },
+  ];
+  db.counters.sku = 100032; db.counters.po = 194; db.counters.so = 153; db.counters.cart = 193; db.counters.asset = 2212; db.counters.ret = 41; db.counters.vbill = 1;
+
+  // normalize qty_onhand/qty_available from lots
+  const ASSET_TYPES = ['t-laptop', 't-trivia', 't-gameshow', 't-tablet'];
+  db.items.forEach((it) => { const q = it.lots.reduce((s, l) => s + l.qty, 0); it.qty_onhand = q; it.qty_available = q; if (it.is_tracked_asset === undefined) it.is_tracked_asset = ASSET_TYPES.includes(it.item_type_id); });
+  return db;
+}
+
+function hydrate() {
+  const base = seed();
+  try {
+    const raw = sessionStorage.getItem(SKEY);
+    // Merge persisted state OVER a fresh seed so any newly-added fields always exist (resilient to version upgrades).
+    if (raw) { const p = JSON.parse(raw); return { ...base, ...p, counters: { ...base.counters, ...(p.counters || {}) } }; }
+  } catch (e) { /* ignore */ }
+  return base;
+}
+
+export const useWarehouseStore = defineStore('warehouse', {
+  state: () => hydrate(),
+  getters: {
+    vendorName: (s) => { const m = new Map(s.vendors.map((v) => [v.id, v])); return (id) => (m.get(id) || {}).name || '—'; },
+    typeName: (s) => (id) => (s.itemTypes.find((t) => t.id === id) || {}).name || '—',
+    itemById: (s) => { const m = new Map(s.items.map((i) => [i.id, i])); return (id) => m.get(id); },
+    groupById: (s) => { const m = new Map(s.groups.map((g) => [g.id, g])); return (id) => m.get(id); },
+    facilityById: (s) => (id) => s.facilities.find((f) => f.id === id),
+    regionalById: (s) => (id) => s.regionals.find((r) => r.id === id),
+    userById: (s) => (id) => s.users.find((u) => u.id === id),
+    providerList: (s) => s.users.filter((u) => u.role === 'Provider'),
+    employeeList: (s) => s.users.filter((u) => u.role !== 'Regional Director'),
+    isTrackableItem() { return (id) => { const it = this.itemById(id); const t = it && this.itemTypes.find((x) => x.id === it.item_type_id); return !!(t && t.trackable); }; },
+    isLaptopItem() { return (id) => { const it = this.itemById(id); return !!(it && it.item_type_id === 't-laptop'); }; },
+    isTriviaItem() { return (id) => { const it = this.itemById(id); return !!(it && it.item_type_id === 't-trivia'); }; },
+    isEmployeeAssignable() { return (id) => { const it = this.itemById(id); return !!(it && (it.item_type_id === 't-laptop' || it.item_type_id === 't-trivia')); }; },
+    // effective FIFO unit cost = oldest lot (base + landed); used for SO locked price
+    fifoUnitCost() { return (id) => { const it = this.itemById(id); if (!it || !it.lots.length) return it ? it.cost : 0; const lot = it.lots[0]; return r2(lot.unit_cost + (lot.landed || 0)); }; },
+    // group on-hand = how many full groups can be built from current stock
+    groupOnHand() {
+      return (id) => {
+        const exp = this.expandGroup(id, 1); const ks = Object.keys(exp);
+        if (!ks.length) return 0;
+        return Math.floor(Math.min(...ks.map((k) => { const it = this.itemById(k); return it ? (it.qty_onhand || 0) / exp[k] : 0; })));
+      };
+    },
+    // --- V4 Item Types: assemblies + tracked-asset helpers ---
+    assemblyById(s) { const m = new Map((s.assemblies || []).map((a) => [a.id, a])); return (id) => m.get(id); },
+    assemblyTypeName(s) { return (id) => ((s.assemblyTypes || []).find((t) => t.id === id) || {}).name || '—'; },
+    itemIsAsset() { return (id) => { const it = this.itemById(id); return !!(it && it.is_tracked_asset); }; },
+    expandAssembly() {
+      return (defId, mult = 1) => {
+        const a = this.assemblyById(defId); const out = {};
+        if (!a) return out;
+        (a.composition || []).forEach((m) => {
+          if (m.kind === 'group') { const sub = this.expandGroup(m.ref_id, mult * m.qty); Object.keys(sub).forEach((k) => { out[k] = (out[k] || 0) + sub[k]; }); }
+          else { out[m.ref_id] = (out[m.ref_id] || 0) + m.qty * mult; }
+        });
+        return out;
+      };
+    },
+    assemblyUnitCost() { return (defId) => { const exp = this.expandAssembly(defId, 1); return r2(Object.keys(exp).reduce((s, k) => s + exp[k] * this.fifoUnitCost(k), 0)); }; },
+    assemblyBuildable() { return (defId) => { const exp = this.expandAssembly(defId, 1); const ks = Object.keys(exp); if (!ks.length) return 0; return Math.floor(Math.min(...ks.map((k) => { const it = this.itemById(k); return it ? (it.qty_onhand || 0) / exp[k] : 0; }))); }; },
+    availableUnits(s) { return (defId) => (s.carts || []).filter((c) => c.assembly_id === defId && c.location === 'Warehouse'); },
+    availableAssetUnits(s) { return (itemName) => (s.trackedAssets || []).filter((a) => a.status === 'In warehouse' && (!itemName || a.item === itemName)); },
+    // unified catalog: single items + groups, all behaving as "items" in one searchable list
+    catalog(s) {
+      const singles = s.items.map((i) => ({ id: i.id, kind: 'item', sku: i.sku, name: i.name, is_group: false, is_active: i.is_active, on_hand: i.qty_onhand, bin: i.bin_location, type: this.typeName(i.item_type_id), unit_cost: this.fifoUnitCost(i.id) }));
+      const grps = s.groups.map((g) => ({ id: g.id, kind: 'group', sku: g.sku, name: g.name, is_group: true, is_active: g.is_active !== false, on_hand: this.groupOnHand(g.id), bin: '— group —', type: 'Group', unit_cost: this.groupUnitCost(g.id) }));
+      const asms = (s.assemblies || []).map((a) => ({ id: a.id, kind: 'assembly', sku: a.sku, name: a.name, is_group: false, is_assembly: true, is_active: a.is_active !== false, on_hand: this.availableUnits(a.id).length, bin: '— assembly —', type: 'Assembly', unit_cost: this.assemblyUnitCost(a.id) }));
+      return [...singles, ...grps, ...asms];
+    },
+    // lightweight options for searchable pickers (no cost computation → fast typing)
+    catalogLite(s) {
+      const singles = s.items.map((i) => ({ id: i.id, sku: i.sku, name: i.name, is_group: false, on_hand: i.qty_onhand }));
+      const grps = s.groups.map((g) => ({ id: g.id, sku: g.sku, name: g.name, is_group: true, on_hand: this.groupOnHand(g.id) }));
+      return [...singles, ...grps];
+    },
+    // SO picker also includes assemblies (built carts you can ship). PO picker keeps catalogLite (parts only).
+    catalogShip(s) {
+      const asms = (s.assemblies || []).map((a) => ({ id: a.id, sku: a.sku, name: a.name, is_group: false, is_assembly: true, on_hand: this.availableUnits(a.id).length }));
+      return [...this.catalogLite, ...asms];
+    },
+    // R3 SO #1: one unified recipient list (facility / regional / provider / employee)
+    recipients(s) {
+      const out = [];
+      s.facilities.forEach((f) => out.push({ id: 'facility:' + f.id, kind: 'facility', name: f.name, sub: 'Facility · ' + f.city, address: f.name + ' · ' + f.address, facility_id: f.id, regional_id: f.regional_id }));
+      s.regionals.forEach((r) => out.push({ id: 'regional:' + r.id, kind: 'regional', name: r.name, sub: 'Regional · ' + r.area, address: r.name + ' · ' + r.address, regional_id: r.id }));
+      s.users.filter((u) => u.role === 'Provider').forEach((u) => out.push({ id: 'provider:' + u.id, kind: 'provider', name: u.name, sub: 'Provider · ' + u.facility, address: u.name + ' · ' + u.address, user_id: u.id, facility_name: u.facility }));
+      s.users.filter((u) => u.role !== 'Regional Director' && u.role !== 'Provider').forEach((u) => out.push({ id: 'employee:' + u.id, kind: 'employee', name: u.name, sub: u.role + ' · ' + u.facility, address: u.name + ' · ' + u.address, user_id: u.id, facility_name: u.facility }));
+      return out;
+    },
+    calendarEvents(s) {
+      const ev = [];
+      s.facilities.forEach((f) => {
+        if (f.onboard_date) ev.push({ date: f.onboard_date, type: 'onb', label: 'Onboarding · ' + f.name, facility_id: f.id, new: !!f._new_onb });
+        if (f.cart_shipment_date) ev.push({ date: f.cart_shipment_date, type: 'ship', label: 'Ship ' + (f.carts_needed || '?') + ' carts · ' + f.name, facility_id: f.id, new: !!f._new_ship });
+      });
+      s.regionalSchedule.forEach((r) => ev.push({ date: r.date, type: 'reg', label: r.label, new: !!r.new }));
+      s.cartReceipts.forEach((r) => { const f = s.facilities.find((x) => x.id === r.facility_id); if (r.received_on) ev.push({ date: r.received_on, type: 'rec', label: 'Received · ' + (f ? f.name : ''), facility_id: r.facility_id, new: !!r._new }); });
+      return ev;
+    },
+    unreadNotifications(s) { return (s.notifications || []).filter((n) => !n.read).length; },
+    newActivityCount(s) { return (s.activity || []).filter((a) => a.new).length; },
+    lowStockList(s) { return s.items.filter((i) => i.is_active !== false && (i.qty_onhand || 0) <= (i.threshold || 0)); },
+  },
+  actions: {
+    _sync(item) { const q = item.lots.reduce((s, l) => s + l.qty, 0); item.qty_onhand = q; item.qty_available = q; },
+    nextSku() { this.counters.sku += 1; return String(this.counters.sku); },
+
+    // Recursively flatten a group (or item) reference into single-item quantities. Handles nested groups.
+    expandGroup(refId, mult = 1, seen = []) {
+      const out = {};
+      const g = this.groupById(refId);
+      if (!g || seen.includes(refId)) return out;
+      const members = g.members || [];
+      members.forEach((m) => {
+        if (m.kind === 'group') {
+          const sub = this.expandGroup(m.ref_id, mult * m.qty, [...seen, refId]);
+          Object.keys(sub).forEach((k) => { out[k] = (out[k] || 0) + sub[k]; });
+        } else {
+          out[m.ref_id] = (out[m.ref_id] || 0) + m.qty * mult;
+        }
+      });
+      return out;
+    },
+    groupUnitCost(refId) { const exp = this.expandGroup(refId, 1); return r2(Object.keys(exp).reduce((s, k) => s + exp[k] * this.fifoUnitCost(k), 0)); },
+    // R3 SO group-line helpers: a group is ONE line whose qty scales every member.
+    soLineUnitCost(l) { if (l && l.kind === 'assembly') return this.assemblyUnitCost(l.assembly_id); if (l && l.kind === 'group') return r2((l.members || []).reduce((s, m) => s + (Number(m.per_group) || 0) * this.fifoUnitCost(m.vendor_item_id), 0)); return this.fifoUnitCost(l.vendor_item_id); },
+    soLineEffective(l, qty) { const q = Number(qty) || 0; if (l && l.kind === 'assembly') return []; if (l && l.kind === 'group') return (l.members || []).map((m) => ({ vendor_item_id: m.vendor_item_id, qty: (Number(m.per_group) || 0) * q })); return [{ vendor_item_id: l.vendor_item_id, qty: q }]; },
+    // max units/groups this line can actually ship given current stock (the store self-protects against over-shipping)
+    soLineMaxShippable(l) { if (l && l.kind === 'assembly') return this.availableUnits(l.assembly_id).length; if (l && l.kind === 'group') { const ms = l.members || []; if (!ms.length) return 0; return Math.floor(Math.min(...ms.map((m) => { const it = this.itemById(m.vendor_item_id); return (it ? (it.qty_onhand || 0) : 0) / (Number(m.per_group) || 1); }))); } const it = this.itemById(l.vendor_item_id); return it ? (it.qty_onhand || 0) : 0; },
+
+    logStock(vendor_item_id, kind, qty, source_label, ref, reason) {
+      this.stockLogs.unshift({ id: uid('l'), vendor_item_id, kind, qty: Math.abs(qty), source_label, ref: ref || null, reason: reason || null, created_at: new Date().toISOString() });
+    },
+    addLot(item, qty, unit_cost, landed, ref) {
+      item.lots.push({ id: uid('lot'), qty, unit_cost: r2(unit_cost), landed: r2(landed || 0), received_at: TODAY, ref: ref || null });
+      this._sync(item);
+    },
+    // FIFO issue: consume oldest lots first, capturing their locked-in cost (base + landed).
+    issueFIFO(item_id, qty) {
+      const it = this.itemById(item_id); if (!it) return { lines: [], baseTotal: 0, landedTotal: 0, total: 0, qty: 0 };
+      let need = qty; const lines = []; let baseTotal = 0, landedTotal = 0;
+      for (const lot of it.lots) {
+        if (need <= 0) break;
+        const take = Math.min(lot.qty, need);
+        if (take <= 0) continue;
+        lines.push({ qty: take, unit_cost: lot.unit_cost, landed: lot.landed || 0 });
+        baseTotal += take * lot.unit_cost; landedTotal += take * (lot.landed || 0); need -= take; lot.qty -= take;
+      }
+      it.lots = it.lots.filter((l) => l.qty > 0);
+      this._sync(it);
+      return { lines, baseTotal: r2(baseTotal), landedTotal: r2(landedTotal), total: r2(baseTotal + landedTotal), qty: qty - need };
+    },
+    // Adjust Stock (R2 Inventory #4): add or remove total on hand, mandatory reason, no FIFO option exposed.
+    adjustStock(item, delta, reason) {
+      if (delta >= 0) { this.addLot(item, delta, item.cost, 0, 'Manual adding'); this.logStock(item.id, 'in', delta, 'Manual adding', null, reason); }
+      else { const r = this.issueFIFO(item.id, -delta); this.logStock(item.id, 'out', -delta, 'Manual removal', null, reason); return r; }
+    },
+
+    // ---- Inventory items / groups ----
+    addItem({ name, vendor_id, item_type_id, cost, qty_onhand, threshold, bin_location, is_active, is_tracked_asset }) {
+      const q = Number(qty_onhand) || 0;
+      const it = { id: uid('i'), sku: this.nextSku(), name, vendor_id: vendor_id || '', item_type_id: item_type_id || '', cost: Number(cost) || 0, threshold: Number(threshold) || 0, bin_location: bin_location || '', is_active: is_active !== false, is_tracked_asset: !!is_tracked_asset, lots: [] };
+      if (q > 0) it.lots.push({ id: uid('lot'), qty: q, unit_cost: Number(cost) || 0, landed: 0, received_at: TODAY, ref: 'opening' });
+      it.qty_onhand = q; it.qty_available = q; this.items.unshift(it); return it;
+    },
+    updateItem(id, patch) { const it = this.itemById(id); if (it) Object.assign(it, patch); },
+    deactivateItem(id) { const it = this.itemById(id); if (it) it.is_active = false; const g = this.groupById(id); if (g) g.is_active = false; },
+    addGroup({ name, description, members }) { const g = { id: uid('g'), sku: this.nextSku(), name, description: description || '', is_active: true, is_group: true, members: members || [] }; this.groups.unshift(g); return g; },
+    updateGroup(id, patch) { const g = this.groupById(id); if (g) Object.assign(g, patch); },
+
+    // ---- Purchase Orders ----
+    nextPoNumber() { this.counters.po += 1; return 'PO-2026-' + String(this.counters.po).padStart(4, '0'); },
+    nextSoNumber() { this.counters.so += 1; return 'SO-2026-' + String(this.counters.so).padStart(4, '0'); },
+    addVendor({ name, email, pay_terms, deposit_percent }) { const v = { id: uid('v'), name, email: email || '', pay_terms: pay_terms || 'Net 30', deposit_percent: Number(deposit_percent) || 0 }; this.vendors.push(v); return v; },
+    updateVendor(id, patch) { const v = this.vendors.find((x) => x.id === id); if (v) Object.assign(v, patch.deposit_percent != null ? { ...patch, deposit_percent: Number(patch.deposit_percent) || 0 } : patch); return v; }, // V4 PO-4: edit vendor terms
+    advancePoProgress(po, stage) { po.progress = stage; },
+    setPoStatus(po, stage) { po.progress = stage; },           // R2 PO #2: dropdown sets status
+    updatePO(id, patch) { const i = this.purchaseOrders.findIndex((p) => p.id === id); if (i > -1) this.purchaseOrders[i] = { ...this.purchaseOrders[i], ...patch }; },
+    poLandedTotal(po) { return r2((po.landed_costs || []).reduce((s, x) => s + (Number(x.amount) || 0), 0)); },
+    addPoLanded(po, label, amount) { (po.landed_costs = po.landed_costs || []).push({ id: uid('lc'), label: label || 'Landed', amount: Number(amount) || 0 }); }, // R2 PO #5 multiple, internal
+    removePoLanded(po, lcId) { po.landed_costs = (po.landed_costs || []).filter((x) => x.id !== lcId); },
+    addPoPayment(po, { amount, file, note }) { const amt = Number(amount) || 0; (po.payments = po.payments || []).push({ id: uid('pay'), amount: amt, original_amount: amt, edited: false, file: file || '', note: note || '', at: new Date().toISOString() }); }, // R2 PO #4
+    updatePoPayment(po, payId, patch) { const p = (po.payments || []).find((x) => x.id === payId); if (!p) return; if (patch.amount != null) { p.amount = Number(patch.amount) || 0; p.edited = p.amount !== p.original_amount; } if (patch.note != null) p.note = patch.note; }, // R3 PO #4 editable + changed flag
+    removePoPayment(po, payId) { po.payments = (po.payments || []).filter((x) => x.id !== payId); },
+    poPaymentsTotal(po) { return r2((po.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0)); }, // R3 PO #4 total
+    poLineGoods(l) { if (l && l.kind === 'group') return r2((Number(l.qty) || 0) * (l.members || []).reduce((s, m) => s + (Number(m.per_group) || 0) * (Number(m.unit_cost) || 0), 0)); return r2((Number(l.qty) || 0) * (Number(l.unit_cost) || 0)); }, // V4 PO-1: group line scales
+    poGoodsTotal(po) { return r2((po.items || []).reduce((s, l) => s + this.poLineGoods(l), 0)); },
+    poTotalWithLanded(po) { return r2(this.poGoodsTotal(po) + this.poLandedTotal(po)); }, // R3 SO #3: reconciles with SO cost
+    poRemaining(po) { return r2(this.poGoodsTotal(po) - this.poPaymentsTotal(po)); }, // R3 PO #3: remaining owed after receiving/payments
+    poDepositFor(vendor_id, total) { const v = this.vendors.find((x) => x.id === vendor_id); const pct = v ? (Number(v.deposit_percent) || 0) : 0; return r2((Number(total) || 0) * pct / 100); }, // R3 PO #1: deposit auto-fills from vendor rules
+    sendPoToVendor(po, cc, resend) {
+      const v = this.vendors.find((x) => x.id === po.vendor_id);
+      const to = v ? v.email : 'vendor@example.com';
+      po.sent = { to, cc: cc || '', at: new Date().toISOString(), resent: !!resend };
+      // NOTE: landed costs are INTERNAL ONLY and are intentionally excluded from the vendor send payload (R2 PO #5).
+      this.emails.unshift({ id: uid('em'), kind: 'PO to vendor', to, cc: cc || '', subject: (resend ? 'Updated Purchase Order ' : 'Purchase Order ') + po.po_number + ' (landed costs withheld)', at: new Date().toISOString() });
+      return po.sent;
+    },
+    // Receive: spread total landed cost per unit into new FIFO lots; optionally create tracked assets.
+    receivePO(po, lines, landedTotalIn, assetEntries) {
+      this.counters.ro += 1;
+      const ro = 'RO-2026-' + String(this.counters.ro).padStart(4, '0');
+      // physical units = expanded item units (a group line fans out by per_group); landed spreads per physical unit
+      const physUnits = (pl, q) => (pl && pl.kind === 'group' ? (pl.members || []).reduce((s, m) => s + (Number(m.per_group) || 0), 0) * q : q);
+      let totalUnits = 0;
+      lines.forEach((ln) => { const pl = po.items.find((l) => l.id === ln.id); if (pl && ln.qty > 0) { const rem = (pl.qty || 0) - (pl.qty_received || 0); totalUnits += physUnits(pl, Math.min(ln.qty, rem)); } });
+      const landedTotal = r2(landedTotalIn != null ? landedTotalIn : this.poLandedTotal(po));
+      const landedPerUnit = totalUnits > 0 ? r2(landedTotal / totalUnits) : 0;
+      const billLines = []; const assetsCreated = [];
+      lines.forEach((ln) => {
+        const poLine = po.items.find((l) => l.id === ln.id);
+        if (!poLine || ln.qty <= 0) return;
+        const remaining = (poLine.qty || 0) - (poLine.qty_received || 0);
+        const q = Math.min(ln.qty, remaining); if (q <= 0) return;
+        poLine.qty_received = (poLine.qty_received || 0) + q;
+        if (poLine.kind === 'group') {
+          (poLine.members || []).forEach((m) => {
+            const mq = (Number(m.per_group) || 0) * q; if (mq <= 0) return;
+            const it = this.itemById(m.vendor_item_id);
+            if (it) this.addLot(it, mq, m.unit_cost, landedPerUnit, ro);
+            this.logStock(m.vendor_item_id, 'in', mq, 'PO Receiving', ro, landedPerUnit ? ('landed +$' + landedPerUnit + '/unit') : null);
+            billLines.push({ name: (it ? it.name : m.name) + ' (' + poLine.name + ')', qty: mq, unit_cost: Number(m.unit_cost) || 0, landed: landedPerUnit });
+          });
+        } else {
+          const it = this.itemById(poLine.vendor_item_id);
+          if (it) this.addLot(it, q, poLine.unit_cost, landedPerUnit, ro); // landed rides on top; base unchanged; carries via FIFO
+          this.logStock(poLine.vendor_item_id, 'in', q, 'PO Receiving', ro, landedPerUnit ? ('landed +$' + landedPerUnit + '/unit') : null);
+          billLines.push({ name: poLine.name, qty: q, unit_cost: poLine.unit_cost, landed: landedPerUnit });
+          // V4 IT-3: tracked assets are no longer minted at receive — they are created at ship-out (singles) / assembly (carts).
+        }
+      });
+      const allFull = po.items.every((l) => (l.qty_received || 0) >= (l.qty || 0));
+      const anyRecv = po.items.some((l) => (l.qty_received || 0) > 0);
+      po.status = allFull ? 'received' : anyRecv ? 'partial' : po.status;
+      // V4 SO-2: single vendor per PO -> one Vendor Bill
+      const billIds = [];
+      if (billLines.length) {
+        this.counters.vbill += 1;
+        const total = r2(billLines.reduce((sum, x) => sum + x.qty * (x.unit_cost + x.landed), 0));
+        const bill = { id: 'BILL-' + String(1000 + this.counters.vbill), vendor_id: po.vendor_id, po_number: po.po_number, receiving_no: ro, total, created_at: new Date().toISOString(), lines: billLines };
+        this.vendorBills.unshift(bill); billIds.push(bill.id);
+      }
+      return { ro, billIds, multi: false, landedPerUnit, assetsCreated };
+    },
+
+    // ---- Cart assembly + asset/inventory mirror ----
+    assembleCart({ code, cart_type, components }) {
+      let cost = 0; const comp = [];
+      components.forEach((c) => { const r = this.issueFIFO(c.vendor_item_id, c.qty); const it = this.itemById(c.vendor_item_id); cost += r.total; comp.push({ vendor_item_id: c.vendor_item_id, name: it ? it.name : '', qty: r.qty, unit_cost: r2(r.total / Math.max(1, r.qty)) }); this.logStock(c.vendor_item_id, 'out', c.qty, 'Cart assembly', code, null); });
+      this.counters.cart += 1;
+      const cart = { id: uid('cart'), code: code || ('CART-A-' + String(this.counters.cart).padStart(4, '0')), cart_type: cart_type || 'Standard', status: 'Available', location: 'Warehouse', facility_id: null, cost: r2(cost), components: comp };
+      this.carts.unshift(cart);
+      return cart;
+    },
+    setCartLocation(cart, location, facility_id) { cart.location = location; cart.facility_id = facility_id || null; cart.status = location === 'Warehouse' ? 'Available' : 'Assigned'; },
+
+    // Ship SO: FIFO-issue (captures base+landed so landed RIDES ALONG on ship-out — R2 PO #5 bug fix).
+    shipSO(so, rows, outboundLanded) {
+      let captured = 0;
+      rows.forEach((row) => {
+        const l = so.items[row.idx]; if (!l) return;
+        // V4 SO-1 + AS-5: an assembly line ships specific built units (no stock decrement; parts consumed at build).
+        if (l.kind === 'assembly') {
+          const remaining = (l.qty || 0) - (l.qty_shipped || 0);
+          let shipped = 0;
+          (row.unit_ids || []).forEach((cid) => {
+            if (shipped >= remaining) return;
+            const cart = this.carts.find((c) => c.id === cid && c.location === 'Warehouse'); if (!cart) return;
+            cart.location = 'Facility'; cart.status = 'Assigned'; cart.facility_id = l.facility_id || so.facility_id; cart.regional_id = so.regional_id || (this.facilityById(cart.facility_id) || {}).regional_id || null; cart.so = so.so_number;
+            captured += Number(cart.cost) || 0;
+            (l.shipped_units = l.shipped_units || []).push(cart.id);
+            shipped += 1;
+          });
+          l.qty_shipped = (l.qty_shipped || 0) + shipped;
+          return;
+        }
+        const remaining = (l.qty || 0) - (l.qty_shipped || 0);
+        const q = Math.min(Number(row.qty) || 0, remaining, this.soLineMaxShippable(l)); if (q <= 0) return;
+        l.shipped_detail = l.shipped_detail || [];
+        let lineTotal = 0;
+        this.soLineEffective(l, q).forEach((e) => {
+          if (e.qty <= 0) return;
+          const r = this.issueFIFO(e.vendor_item_id, e.qty);
+          lineTotal += r.total; captured += r.total;
+          r.lines.forEach((li) => l.shipped_detail.push({ vendor_item_id: e.vendor_item_id, qty: li.qty, unit_cost: li.unit_cost, landed: li.landed || 0 }));
+          this.logStock(e.vendor_item_id, 'out', r.qty, 'SO Shipment', so.so_number, r.landedTotal ? ('incl landed $' + r.landedTotal) : null);
+          // V4 IT-3: an asset-flagged single becomes a tracked asset when shipped out (assigned to the chosen employee if any).
+          if (this.itemIsAsset(e.vendor_item_id)) {
+            const itm = this.itemById(e.vendor_item_id);
+            const u = row.employee_id ? this.userById(row.employee_id) : null;
+            const itype = this.typeName(itm ? itm.item_type_id : '');
+            for (let k = 0; k < r.qty; k++) {
+              this.counters.asset += 1;
+              const tag = 'AST-' + this.counters.asset;
+              this.trackedAssets.unshift({ id: uid('ta'), item: itm ? itm.name : l.name, item_type: itype, asset_tag: tag, serial: '', status: u ? 'Assigned' : 'Shipped', received_at: TODAY, po: 'SO ' + so.so_number, so: so.so_number });
+              if (u) this.userAssets.unshift({ id: uid('ua'), user: u.name, facility: u.facility, item: itm ? itm.name : l.name, item_type: itype, asset_tag: tag, serial: '', cost: r2(r.total / Math.max(1, r.qty)), assigned: TODAY, status: 'Active', so: so.so_number });
+            }
+          }
+        });
+        l.qty_shipped = (l.qty_shipped || 0) + q;
+        l.shipped_cost_total = r2((l.shipped_cost_total || 0) + lineTotal);
+      });
+      if (Array.isArray(outboundLanded)) so.landed_costs = outboundLanded;
+      const allShipped = so.items.every((l) => (l.qty_shipped || 0) >= (l.qty || 0));
+      if (allShipped && so.status !== 'completed') so.status = 'shipped';
+      else if (!allShipped && so.status === 'draft') so.status = 'in_progress';
+      return { captured: r2(captured) };
+    },
+    // R2 SO #8: ship the in-stock items, then move the shortfall to a back-order SO ("BC" suffix) and complete the original.
+    shipAndBackorder(so, rows, outboundLanded) {
+      const res = this.shipSO(so, rows, outboundLanded);
+      const short = so.items.filter((l) => (l.qty_shipped || 0) < (l.qty || 0)).map((l) => {
+        const base = { name: l.name, facility_id: l.facility_id, qty: (l.qty || 0) - (l.qty_shipped || 0), qty_shipped: 0, shipped_cost_total: 0, shipped_detail: [] };
+        if (l.kind === 'group') return { ...base, kind: 'group', group_id: l.group_id, members: JSON.parse(JSON.stringify(l.members || [])) };
+        return { ...base, kind: 'item', vendor_item_id: l.vendor_item_id, unit_cost: l.unit_cost };
+      });
+      let backorder = null;
+      if (short.length) {
+        backorder = {
+          id: uid('so'), so_number: so.so_number + 'BC', recipient_type: so.recipient_type, recipient_id: so.recipient_id,
+          ship_to_type: so.ship_to_type, regional_id: so.regional_id, facility_id: so.facility_id, order_date: TODAY, expected_date: '',
+          delivery_method: so.delivery_method, shipping_address: so.shipping_address, shipping_cost: 0, landed_costs: [], status: 'backorder',
+          notes: 'Back order of ' + so.so_number + ' — ships when items are back in stock.', backorder_of: so.so_number, groups: [], attachments: [], items: short,
+        };
+        this.salesOrders.unshift(backorder);
+        so.notes = (so.notes ? so.notes + ' · ' : '') + short.map((l) => l.qty + '× ' + l.name).join(', ') + ' out of stock → back order ' + backorder.so_number;
+      }
+      so.status = 'completed';
+      this.emailCustomer(so, 'Shipped (partial — back order created)');
+      return { ...res, backorder };
+    },
+    // R2 SO #6: reverse a step — unmark shipped, return stock to inventory.
+    reverseShip(so) {
+      so.items.forEach((l) => {
+        if ((l.qty_shipped || 0) <= 0) return;
+        if (l.kind === 'assembly') {
+          (l.shipped_units || []).forEach((cid) => { const c = this.carts.find((x) => x.id === cid); if (c) { c.location = 'Warehouse'; c.status = 'Available'; c.facility_id = null; c.regional_id = null; c.so = null; } });
+          l.shipped_units = []; l.qty_shipped = 0; l.shipped_cost_total = 0; return;
+        }
+        const det = l.shipped_detail || [];
+        if (det.length) {
+          det.forEach((d) => { const it = this.itemById(d.vendor_item_id); if (it) this.addLot(it, d.qty, d.unit_cost, d.landed || 0, 'reversal ' + so.so_number); this.logStock(d.vendor_item_id, 'in', d.qty, 'Ship reversal', so.so_number, 'shipment reversed'); });
+        } else {
+          // legacy line (no detail captured) — re-add the aggregate at base + derived landed
+          const q = l.qty_shipped || 0; const it = this.itemById(l.vendor_item_id);
+          const unit = (l.shipped_cost_total || 0) / q; const base = it ? it.cost : unit; const landed = r2(unit - base);
+          if (it) this.addLot(it, q, base, landed > 0 ? landed : 0, 'reversal ' + so.so_number);
+          this.logStock(l.vendor_item_id, 'in', q, 'Ship reversal', so.so_number, 'shipment reversed');
+        }
+        l.qty_shipped = 0; l.shipped_cost_total = 0; l.shipped_detail = [];
+      });
+      // also unwind any employee asset assignments this shipment created (laptops/trivia) — otherwise the
+      // unit is double-counted: it returns to inventory AND stays assigned to the employee.
+      this.userAssets = this.userAssets.filter((a) => a.so !== so.so_number);
+      this.trackedAssets = this.trackedAssets.filter((a) => a.so !== so.so_number);
+      so.status = 'in_progress';
+      // reversing restores the full order — drop any unshipped back orders it spawned (avoid phantom over-demand)
+      this.salesOrders = this.salesOrders.filter((x) => !(x.backorder_of === so.so_number && (x.items || []).every((l) => (l.qty_shipped || 0) === 0)));
+      return so;
+    },
+    backordersReady() {
+      return this.salesOrders.filter((so) => so.status === 'backorder' && so.items.every((l) => this.soLineEffective(l, (l.qty || 0) - (l.qty_shipped || 0)).every((e) => { const it = this.itemById(e.vendor_item_id); return it && (it.qty_onhand || 0) >= e.qty; })));
+    },
+
+    addSalesOrder(so) { this.salesOrders.unshift(so); this.emailCustomer(so, 'Order received'); },
+    addSoAttachment(soId, name, kind) { const so = this.salesOrders.find((s) => s.id === soId); if (so && name) { (so.attachments = so.attachments || []).push({ id: uid('att'), name, kind: kind || 'Attachment', at: new Date().toISOString() }); } }, // R3 SO #4
+    removeSoAttachment(soId, attId) { const so = this.salesOrders.find((s) => s.id === soId); if (so) so.attachments = (so.attachments || []).filter((a) => a.id !== attId); },
+    facilityShipmentDocs(facility_id) { const out = []; this.salesOrders.forEach((so) => { const targets = so.facility_id === facility_id || (so.items || []).some((l) => l.facility_id === facility_id); if (targets) (so.attachments || []).forEach((a) => out.push({ so_number: so.so_number, name: a.name, kind: a.kind, at: a.at })); }); return out; }, // R3 SO #4: docs visible under the facility
+    updateSalesOrder(id, patch) { const i = this.salesOrders.findIndex((s) => s.id === id); if (i > -1) this.salesOrders[i] = { ...this.salesOrders[i], ...patch }; },
+    soOutboundTotal(so) { return r2((Number(so.shipping_cost) || 0) + (so.landed_costs || []).reduce((s, x) => s + (Number(x.amount) || 0), 0)); },
+    // SO total with landed riding along: shipped portion at captured cost (incl landed) + remainder at FIFO + outbound.
+    soGoodsTotal(so) {
+      return r2(so.items.reduce((s, l) => {
+        const shipped = l.qty_shipped || 0; const rem = Math.max(0, (l.qty || 0) - shipped);
+        return s + (l.shipped_cost_total || 0) + rem * this.soLineUnitCost(l);
+      }, 0));
+    },
+    facilityCharges(so) {
+      const out = {};
+      so.items.forEach((l) => { const fid = l.facility_id || so.facility_id; const shipped = l.qty_shipped || 0; const rem = Math.max(0, (l.qty || 0) - shipped); const cost = (l.shipped_cost_total || 0) + rem * this.soLineUnitCost(l); out[fid] = r2((out[fid] || 0) + cost); });
+      return out;
+    },
+    combineSOs(soIds, shipping_cost) {
+      const sos = this.salesOrders.filter((s) => soIds.includes(s.id)); if (sos.length < 2) return null;
+      const regional_id = sos[0].regional_id || (this.facilityById(sos[0].facility_id) || {}).regional_id;
+      const byFacility = {};
+      sos.forEach((so) => { so.items.forEach((l) => { const fid = l.facility_id || so.facility_id; (byFacility[fid] = byFacility[fid] || []).push({ so: so.so_number, name: l.name, qty: l.qty, vendor_item_id: l.vendor_item_id }); }); so.combined_into = true; });
+      this.counters.ship += 1;
+      const shipment = { id: uid('shp'), shipment_no: 'SHP-2026-' + String(this.counters.ship).padStart(3, '0'), regional_id, so_numbers: sos.map((s) => s.so_number), shipping_cost: Number(shipping_cost) || 0, byFacility, created_at: new Date().toISOString() };
+      this.shipments.unshift(shipment);
+      return shipment;
+    },
+    emailCustomer(so, event) {
+      const reg = this.regionalById(so.regional_id); const fac = this.facilityById(so.facility_id);
+      const rec = so.recipient_id ? (this.facilityById(so.recipient_id) || this.regionalById(so.recipient_id) || this.userById(so.recipient_id)) : null;
+      const to = (rec && rec.email) ? rec.email : (reg ? reg.email : (fac ? (fac.name.toLowerCase().replace(/\s+/g, '.') + '@carease.com') : 'customer@carease.com'));
+      this.emails.unshift({ id: uid('em'), kind: 'Customer order', to, cc: '', subject: (event || 'Order update') + ' — ' + so.so_number, at: new Date().toISOString() });
+    },
+
+    /* ---- Returns (R1–R4): only ASSETS are returned. Start by source, confirm on arrival, make carts whole. ---- */
+    nextReturnNo() { this.counters.ret += 1; return 'RET-2026-' + String(this.counters.ret).padStart(4, '0'); },
+    // Returnable assets for a source (facility or employee): assigned carts + facility/user assets.
+    returnableAssetsFor(source_type, source_id) {
+      const out = [];
+      if (source_type === 'facility') {
+        const f = this.facilityById(source_id); const fname = f ? f.name : '';
+        this.carts.filter((c) => c.facility_id === source_id).forEach((c) => out.push({ key: 'cart:' + c.id, kind: 'cart', cart_id: c.id, label: c.code + ' (' + c.cart_type + ' cart)', asset_tag: c.code, cost: c.cost, components: c.components }));
+        this.facilityAssets.filter((a) => a.facility_id === source_id).forEach((a) => out.push({ key: 'fa:' + a.id, kind: 'facility', fa_id: a.id, label: a.item + ' ×' + a.qty, asset_tag: a.asset_tag, cost: 0 }));
+        this.userAssets.filter((a) => a.facility === fname && a.status !== 'Returned').forEach((a) => out.push({ key: 'ua:' + a.id, kind: a.item_type === 'Trivia Equipment' ? 'trivia' : 'laptop', ua_id: a.id, label: a.item + ' · ' + a.user, asset_tag: a.asset_tag, cost: a.cost || 0 }));
+      } else if (source_type === 'employee') {
+        const u = this.userById(source_id); const uname = u ? u.name : '';
+        this.userAssets.filter((a) => a.user === uname && a.status !== 'Returned').forEach((a) => out.push({ key: 'ua:' + a.id, kind: a.item_type === 'Trivia Equipment' ? 'trivia' : 'laptop', ua_id: a.id, label: a.item + ' · ' + a.asset_tag, asset_tag: a.asset_tag, cost: a.cost || 0 }));
+      }
+      return out;
+    },
+    sourceLabel(source_type, source_id) {
+      if (source_type === 'facility') return (this.facilityById(source_id) || {}).name || '';
+      if (source_type === 'employee') return (this.userById(source_id) || {}).name || '';
+      return '';
+    },
+    startAssetReturn({ source_type, source_id, so_ref, assets }) {
+      const ret = { id: uid('ret'), ret_no: this.nextReturnNo(), source_type, source_id, source_label: this.sourceLabel(source_type, source_id), so_ref: so_ref || '', assets: JSON.parse(JSON.stringify(assets || [])), status: 'in_transit', refund_total: 0, replacement_charge: 0, created_at: new Date().toISOString(), received_at: null };
+      this.returns.unshift(ret);
+      return ret;
+    },
+    // Confirm arrival: tick received assets, compute refund (PC), make returned carts whole (replace missing from inventory, charge facility).
+    confirmAssetReturn(retId, decisions) {
+      const ret = this.returns.find((r) => r.id === retId); if (!ret) return null;
+      let refund = 0, charge = 0;
+      (decisions || []).forEach((d) => {
+        if (!d.received) return;
+        const a = ret.assets.find((x) => x.key === d.key); if (!a) return;
+        a.received = true;
+        refund += Number(a.cost) || 0; // PC refunded to the facility for the asset
+        if (a.kind === 'cart' && a.cart_id) {
+          const cart = this.carts.find((c) => c.id === a.cart_id);
+          if (cart) {
+            (d.missing || []).forEach((m) => {
+              const q = Number(m.qty) || 0; if (q <= 0) return;
+              const r = this.issueFIFO(m.vendor_item_id, q); // pull replacements from inventory
+              charge += r.total;                              // cost charged to the source facility
+              this.logStock(m.vendor_item_id, 'out', q, 'Return make-whole', ret.ret_no, 'replace missing in ' + cart.code);
+            });
+            // cart restored to standard: back to warehouse availability at full component cost
+            cart.cost = r2(cart.components.reduce((s, c) => s + (Number(c.qty) || 0) * this.fifoUnitCost(c.vendor_item_id), 0));
+            this.setCartLocation(cart, 'Warehouse', null);
+          }
+        } else if ((a.kind === 'laptop' || a.kind === 'trivia') && a.ua_id) {
+          const ua = this.userAssets.find((x) => x.id === a.ua_id); if (ua) ua.status = 'Returned';
+          this.counters.asset += 1;
+          this.trackedAssets.unshift({ id: uid('ta'), item: a.label.split(' · ')[0], item_type: a.kind === 'trivia' ? 'Trivia Equipment' : 'Laptop', asset_tag: a.asset_tag, serial: '', status: 'In warehouse', received_at: TODAY, po: 'return ' + ret.ret_no });
+        }
+      });
+      ret.status = 'received';
+      ret.received_at = new Date().toISOString();
+      ret.refund_total = r2(refund);
+      ret.replacement_charge = r2(charge);
+      ret.charge_facility = ret.source_type === 'facility' ? ret.source_label : '';
+      return ret;
+    },
+
+    /* Users (warehouse-scoped) */
+    addUser({ name, role, program, facility }) { this.users.push({ id: uid('u'), name, role: role || 'Warehouse Employee', program: program || 'Warehouse', facility: facility || 'All facilities', email: '', address: '' }); },
+    removeUser(id) { const i = this.users.findIndex((u) => u.id === id); if (i > -1) this.users.splice(i, 1); },
+    /* Roles & permissions */
+    cycleGrant(capId) { const order = ['yes', 'partial', 'confirm', 'no']; const cap = this.capabilities.find((c) => c.id === capId); if (cap) cap.grant = order[(order.indexOf(cap.grant) + 1) % order.length]; },
+    toggleEmployeeCap(capId) { const cap = this.capabilities.find((c) => c.id === capId); if (cap) cap.employee = !cap.employee; },
+    deriveEmployeeRole() { if (this.employeeRoleCreated) return; this.roles.push({ id: 'warehouse-employee', name: 'Warehouse Employee', model_user: '—', derived_from: 'warehouse-manager', renamed_from: null, custom: false }); this.employeeRoleCreated = true; },
+    addManagerRole(name) { const id = 'role-' + uid('r'); this.roles.push({ id, name: name || 'New Manager Role', model_user: '—', derived_from: 'warehouse-manager', renamed_from: null, custom: true }); return id; },
+    /* Facility record management */
+    addFacilityAttachment(facId, fileName) { const f = this.facilityById(facId); if (f && fileName) f.attachments.push(fileName); },
+    sendFacilityMessage(facId, text) { const f = this.facilityById(facId); if (f && text && text.trim()) f.messages.unshift({ id: uid('m'), author: 'Malky Locker', text: text.trim(), at: new Date().toISOString() }); },
+    confirmCartReceipt({ facility_id, received_on, bol, photos }) { const f = this.facilityById(facility_id); this.cartReceipts.unshift({ id: uid('rcpt'), facility_id, shipped_qty: f ? f.carts_needed : null, shipment_date: f ? f.cart_shipment_date : null, received_on, bol_name: bol, photos: (photos || []).slice() }); if (f) f.status = 'Received'; },
+
+    /* ---- V4 Assemblies (Single / Group / Assembly model) ---- */
+    addAssemblyDef({ name, assembly_type_id, composition, asset_defaults }) {
+      const a = { id: uid('asm'), sku: this.nextSku(), name: name || 'New Assembly', assembly_type_id: assembly_type_id || '', composition: composition || [], asset_defaults: asset_defaults || {}, is_active: true, is_assembly: true };
+      this.assemblies.unshift(a); return a;
+    },
+    updateAssemblyDef(id, patch) { const a = this.assemblyById(id); if (a) Object.assign(a, patch); },
+    addAssemblyType(name) { const id = 'at-' + uid('t'); this.assemblyTypes.push({ id, name: name || 'New Type' }); return id; },
+    updateAssemblyType(id, name) { const t = (this.assemblyTypes || []).find((x) => x.id === id); if (t) t.name = name; },
+    assemblyAutoFill(defId) { const a = this.assemblyById(defId); return a ? { ...(a.asset_defaults || {}) } : {}; },
+    // AS-1..7 + IT-5: consume the parts (FIFO incl landed) and create exactly ONE tracked cart asset. Code mandatory.
+    buildAssembly({ assembly_id, code, cart_color, tablet_number, fields }) {
+      const a = this.assemblyById(assembly_id); if (!a) return { error: 'Unknown assembly.' };
+      if (!code || !String(code).trim()) return { error: 'Cart Code is required.' };
+      const exp = this.expandAssembly(assembly_id, 1);
+      for (const k of Object.keys(exp)) { const it = this.itemById(k); if (!it || (it.qty_onhand || 0) < exp[k]) return { error: 'Not enough ' + (it ? it.name : k) + ' in stock.' }; }
+      let cost = 0; const comp = [];
+      Object.keys(exp).forEach((k) => { const r = this.issueFIFO(k, exp[k]); const it = this.itemById(k); cost += r.total; comp.push({ vendor_item_id: k, name: it ? it.name : '', qty: exp[k], unit_cost: r2(r.total / Math.max(1, exp[k])) }); this.logStock(k, 'out', exp[k], 'Assembly build', String(code).trim(), null); });
+      this.counters.cart += 1;
+      const af = { ...(a.asset_defaults || {}), ...(fields || {}) };
+      const cart = { id: uid('cart'), code: String(code).trim(), assembly_id, cart_type: af.cart_type || this.assemblyTypeName(a.assembly_type_id), key_type: af.key_type || '', bp_device: af.bp_device || '', cart_color: cart_color || '', tablet_number: tablet_number || '', status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, cost: r2(cost), components: comp };
+      this.carts.unshift(cart);
+      return { cart };
+    },
+    editAssemblyUnit(cartId, patch) { const c = this.carts.find((x) => x.id === cartId); if (c) Object.assign(c, patch); return c; },
+
+    markNotificationRead(id) { const n = (this.notifications || []).find((x) => x.id === id); if (n) n.read = true; },
+    markAllNotificationsRead() { (this.notifications || []).forEach((n) => { n.read = true; }); },
+    logActivity(text) { (this.activity = this.activity || []).unshift({ id: uid('ac'), at: new Date().toISOString(), text, new: true }); },
+    setAssetStatus(collection, id, status) { const arr = this[collection]; if (!Array.isArray(arr)) return; const r = arr.find((x) => x.id === id); if (r) { r.status = status; this.logActivity('Status: ' + (r.asset_tag || r.code || r.item || id) + ' -> ' + status); } },
+    queuePO(itemIds) { this.poDraft = (itemIds || []).slice(); },
+    takePoDraft() { const d = (this.poDraft || []).slice(); this.poDraft = []; return d; },
+
+    resetDemo() { this.$patch(seed()); try { sessionStorage.removeItem(SKEY); } catch (e) { /* ignore */ } },
+  },
+});
+
+export function persistWarehouse(store) {
+  let timer = null;
+  store.$subscribe((_m, state) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { try { sessionStorage.setItem(SKEY, JSON.stringify(state)); } catch (e) { /* ignore */ } }, 400);
+  });
+}
