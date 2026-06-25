@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useWarehouseStore, persistWarehouse } from '@/stores/warehouse';
 import { useToast } from '@/composables/useToast';
+import { useAnnotations } from '@/composables/useAnnotations';
 import { fmtDateTime } from '@/utils/format';
 import ToastStack from '@/components/ui/ToastStack.vue';
 import DocumentViewer from '@/components/ui/DocumentViewer.vue';
@@ -12,6 +13,7 @@ import Badge from '@/components/ui/Badge.vue';
 const router = useRouter();
 const store = useWarehouseStore();
 const toast = useToast();
+const { showAnnotations, toggle: toggleNotes } = useAnnotations();
 
 // Persist store → sessionStorage (cleared by the browser on tab/window close).
 persistWarehouse(store);
@@ -20,6 +22,7 @@ const nav = [
   { name: 'Warehouse Dashboard', to: '/', icon: 'M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10', isNew: true },
   { name: 'Inventory', to: '/inventory', icon: 'M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10' },
   { name: 'Assets', to: '/assets', icon: 'M4 7h16M4 12h16M4 17h10' },
+  { name: 'Equipment Maps', to: '/equipment-maps', icon: 'M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 4m0 13V4m0 0L9 7', isNew: true },
   { name: 'Purchase Order', to: '/purchase-orders', icon: 'M3 7h18M5 7v13a1 1 0 001 1h12a1 1 0 001-1V7M9 7V5a2 2 0 012-2h2a2 2 0 012 2v2' },
   { name: 'Sales Order', to: '/sales-orders', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2' },
   { name: 'Returns', to: '/returns', icon: 'M3 7h13a4 4 0 010 8h-3m0 0l3-3m-3 3l3 3' },
@@ -61,7 +64,7 @@ function reset() {
               <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
             </svg>
             <span class="truncate">{{ item.name }}</span>
-            <span v-if="item.isNew" class="ml-auto text-[8px] font-extrabold tracking-wide px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-900">NEW</span>
+            <span v-if="item.isNew && showAnnotations" class="ml-auto text-[8px] font-extrabold tracking-wide px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-900">NEW</span>
           </RouterLink>
 
           <p class="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400/70">Other</p>
@@ -90,6 +93,18 @@ function reset() {
         <div class="lg:hidden font-bold text-slate-900">Carease · Warehouse</div>
         <span class="hidden lg:inline text-xs font-semibold uppercase tracking-wider text-slate-400">Internal Operations Platform</span>
         <div class="ml-auto flex items-center gap-3">
+          <!-- Demo "Change notes" toggle: ON shows the NEW labels + notes; OFF previews the real product -->
+          <button
+            class="hidden sm:inline-flex items-center gap-2 h-9 pl-2.5 pr-3 rounded-full border text-xs font-semibold transition-colors"
+            :class="showAnnotations ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'"
+            :title="showAnnotations ? 'Change notes are showing — click to preview the real product' : 'Change notes hidden — click to show what changed'"
+            @click="toggleNotes"
+          >
+            <span class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors" :class="showAnnotations ? 'bg-emerald-500' : 'bg-slate-300'">
+              <span class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform" :class="showAnnotations ? 'translate-x-3.5' : 'translate-x-0.5'"></span>
+            </span>
+            <span>{{ showAnnotations ? 'Change notes: On' : 'Change notes: Off' }}</span>
+          </button>
           <button class="relative inline-flex h-9 w-9 items-center justify-center rounded-full hover:bg-slate-100 text-slate-600 transition-colors" title="Notifications" @click="openNotif">
             <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" /></svg>
             <span v-if="store.unreadNotifications" class="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">{{ store.unreadNotifications }}</span>

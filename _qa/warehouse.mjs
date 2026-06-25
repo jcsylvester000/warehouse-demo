@@ -1,9 +1,23 @@
 import { defineStore } from 'pinia';
 import { uid } from '../src/utils/format.js';
+import { assetSeed } from '../src/data/assetSeed.js';
+import { geoForFacility } from '../src/utils/geo.js';
 
 const SKEY = 'carease_wms_app_v5';
 export const TODAY = '2026-06-16';
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+// Asset-class metadata: the 8 real classes, their assignment target, and the columns to show.
+const ASSET_CLASSES = [
+  { id: 'cart', label: 'Carts', prefix: '', assign: 'facility', cols: [['cart_type', 'Cart Type'], ['bp_machine', 'BP Machine'], ['key', 'Key'], ['tablet_type', 'Tablet Type'], ['tablet_number', 'Tablet #'], ['clini_omni', 'Clini/Omni'], ['basket_type', 'Basket'], ['lte', 'LTE'], ['regional', 'Regional']] },
+  { id: 'laptop', label: 'Laptops', prefix: 'LT-', assign: 'employee', cols: [['brand', 'Brand'], ['model', 'Model'], ['serial', 'Serial'], ['ram', 'RAM'], ['processor', 'Processor'], ['clicrite', 'Clicrite ID'], ['price', 'Price'], ['trivia', 'Trivia']] },
+  { id: 'gameshow', label: 'Game Shows', prefix: 'GS-', assign: 'employee', cols: [['tracking', 'Tracking'], ['return_tracking', 'Return Tracking'], ['personal_email', 'Personal Email']] },
+  { id: 'tablet', label: 'Tablets', prefix: 'T-', assign: 'employee', cols: [['model', 'Model'], ['serial', 'Serial'], ['imei', 'IMEI'], ['lte', 'LTE'], ['sim', 'SIM'], ['phone', 'Phone #'], ['price', 'Price']] },
+  { id: 'monitor', label: 'Monitors', prefix: 'CM-', assign: 'employee', cols: [['model', 'Model'], ['serial', 'Serial'], ['size', 'Size'], ['price', 'Price']] },
+  { id: 'desktop', label: 'Desktops', prefix: 'DT-', assign: 'employee', cols: [['model', 'Model'], ['serial', 'Serial'], ['clicrite', 'Clicrite ID'], ['price', 'Price']] },
+  { id: 'cellphone', label: 'Cell Phones', prefix: 'P-', assign: 'employee', cols: [['model', 'Model'], ['serial', 'Serial'], ['lte', 'Carrier'], ['imei', 'IMEI'], ['phone', 'Phone #'], ['price', 'Price']] },
+  { id: 'ezpass', label: 'EZ Pass', prefix: '', assign: 'employee', cols: [['tag_number', 'Tag #']] },
+];
 
 /* ------------------------------------------------------------------ seed */
 function seed() {
@@ -321,6 +335,25 @@ function seed() {
   // they sit in inventory and can only leave the warehouse after being assembled into a tracked unit.
   const ASSEMBLY_ONLY_TYPES = ['t-laptop', 't-trivia', 't-gameshow'];
   db.items.forEach((it) => { const q = it.lots.reduce((s, l) => s + l.qty, 0); it.qty_onhand = q; it.qty_available = q; if (it.assembly_only === undefined) it.assembly_only = ASSEMBLY_ONLY_TYPES.includes(it.item_type_id); it.is_tracked_asset = false; });
+
+  // ---- Real Asset Registry (seeded from the Cart List inventory) ----
+  // Adheres to the amendment: a Cart is a cart-assembly (assigned to a Facility + Regional);
+  // every IT class is a single-item assembly (assigned to an Employee). Holder is Employee or Facility only.
+  db.assetClasses = ASSET_CLASSES;
+  let _an = 0;
+  const mkA = (klass, rec) => ({ id: 'as-' + (++_an), klass, ...rec });
+  db.assets = [];
+  (assetSeed.carts || []).forEach((r) => db.assets.push(mkA('cart', r)));
+  (assetSeed.laptops || []).forEach((r) => db.assets.push(mkA('laptop', r)));
+  (assetSeed.laptops_old || []).forEach((r) => db.assets.push(mkA('laptop', { ...r, legacy: true })));
+  (assetSeed.gameshows || []).forEach((r) => db.assets.push(mkA('gameshow', r)));
+  (assetSeed.tablets || []).forEach((r) => db.assets.push(mkA('tablet', r)));
+  (assetSeed.monitors || []).forEach((r) => db.assets.push(mkA('monitor', r)));
+  (assetSeed.desktops || []).forEach((r) => db.assets.push(mkA('desktop', r)));
+  (assetSeed.cellphones || []).forEach((r) => db.assets.push(mkA('cellphone', r)));
+  (assetSeed.ezpass || []).forEach((r) => db.assets.push(mkA('ezpass', r)));
+  db.terminatedEmployees = (assetSeed.terminated_employees || []).map((t, i) => ({ id: 'te-' + (i + 1), ...t }));
+  db.counters.asn = _an;
   return db;
 }
 
@@ -337,6 +370,60 @@ function hydrate() {
 export const useWarehouseStore = defineStore('warehouse', {
   state: () => hydrate(),
   getters: {
+    // ---- Real Asset Registry getters ----
+    assetClassList(s) { return s.assetClasses || []; },
+    assetsOf(s) { return (klass) => (s.assets || []).filter((a) => a.klass === klass); },
+    assetClassCount(s) { return (klass) => (s.assets || []).filter((a) => a.klass === klass).length; },
+    assetTotal(s) { return (s.assets || []).length; },
+    assetClassMeta(s) { return (klass) => (s.assetClasses || []).find((c) => c.id === klass) || { id: klass, label: klass, cols: [] }; },
+    assetStatusOptions() { return ['In Warehouse', 'Deployed', 'Assigned', 'Out of Service', 'Incomplete', 'Retired', 'Return Pending', 'Returned', 'Active', 'Deactivated']; },
+    assetCountByStatus(s) { return (klass, status) => (s.assets || []).filter((a) => (!klass || a.klass === klass) && a.status === status).length; },
+    terminatedList(s) { return s.terminatedEmployees || []; },
+    assetsForEmployee(s) { return (name) => (s.assets || []).filter((a) => a.holder_type === 'employee' && (a.holder || '') === name); },
+    // assets that still need to be recovered from a terminated employee (amendment-aligned returns)
+    assetsToRecover(s) {
+      const term = new Set((s.terminatedEmployees || []).map((t) => (t.name || '').toLowerCase()));
+      return (s.assets || []).filter((a) => a.holder_type === 'employee' && a.status !== 'Returned' && (a.terminated || term.has((a.holder || '').toLowerCase())));
+    },
+    // ---- Equipment Map: facilities (carts deployed there) + staff (their equipment) ----
+    mapFacilities(s) {
+      const byName = new Map();
+      (s.assets || []).forEach((a) => { if (a.klass === 'cart' && a.holder_type === 'facility' && a.holder) { if (!byName.has(a.holder)) byName.set(a.holder, []); byName.get(a.holder).push(a); } });
+      const out = [];
+      byName.forEach((carts, name) => {
+        const geo = geoForFacility(name);
+        const regCount = {}; carts.forEach((c) => { const r = c.regional || '—'; regCount[r] = (regCount[r] || 0) + 1; });
+        const regional = Object.keys(regCount).sort((x, y) => regCount[y] - regCount[x])[0] || '—';
+        const statusCounts = {}; carts.forEach((c) => { statusCounts[c.status] = (statusCounts[c.status] || 0) + 1; });
+        out.push({ id: 'fac-' + out.length, name, regional, state: geo.state, city: geo.city, lat: geo.lat, lng: geo.lng, cartCount: carts.length, statusCounts, carts });
+      });
+      return out.sort((a, b) => b.cartCount - a.cartCount);
+    },
+    mapStates() { return [...new Set(this.mapFacilities.map((f) => f.state))].sort(); },
+    mapRegionals() { return [...new Set(this.mapFacilities.map((f) => f.regional))].filter((r) => r && r !== '—').sort(); },
+    staffWithEquipment(s) {
+      const by = new Map();
+      (s.assets || []).forEach((a) => { if (a.holder_type !== 'employee' || !a.holder) return; if (!by.has(a.holder)) by.set(a.holder, { name: a.holder, state: a.emp_state || '', items: [] }); const rec = by.get(a.holder); if (!rec.state && a.emp_state) rec.state = a.emp_state; rec.items.push({ klass: a.klass, code: a.code, status: a.status }); });
+      return [...by.values()].sort((a, b) => a.name.localeCompare(b.name));
+    },
+    staffInState() { return (st) => this.staffWithEquipment.filter((u) => u.state === st); },
+    // For the prototype: guarantee at least 2 people per facility so the data presents itself.
+    // Real state records are used first; if fewer than 2, deterministic demo people (clearly flagged) fill in.
+    // In production this returns the actual employees assigned to each facility.
+    facilityStaff() {
+      const pool = ['Ava R.', 'Liam K.', 'Maya T.', 'Noah P.', 'Sofia G.', 'Ethan B.', 'Zoe M.', 'Owen L.', 'Nia S.', 'Eli C.', 'Iris W.', 'Leo D.'];
+      return (f) => {
+        const real = this.staffInState(f.state);
+        if (real.length >= 2) return real;
+        let h = 0; const str = String((f && (f.name || f.id)) || 'x'); for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) >>> 0; }
+        const demos = [];
+        for (let i = 0; i < 2 - real.length; i++) {
+          const nm = pool[(h + i * 7) % pool.length];
+          demos.push({ name: nm, state: f.state, placeholder: true, items: [ { klass: 'laptop', code: 'LT-' + (1000 + ((h + i) % 8999)), status: 'Assigned' }, { klass: 'cellphone', code: 'P-' + (100 + ((h + i * 3) % 800)), status: 'Assigned' } ] });
+        }
+        return [...real, ...demos];
+      };
+    },
     vendorName: (s) => { const m = new Map(s.vendors.map((v) => [v.id, v])); return (id) => (m.get(id) || {}).name || '—'; },
     typeName: (s) => (id) => (s.itemTypes.find((t) => t.id === id) || {}).name || '—',
     itemById: (s) => { const m = new Map(s.items.map((i) => [i.id, i])); return (id) => m.get(id); },
@@ -427,6 +514,16 @@ export const useWarehouseStore = defineStore('warehouse', {
     lowStockList(s) { return s.items.filter((i) => i.is_active !== false && (i.qty_onhand || 0) <= (i.threshold || 0)); },
   },
   actions: {
+    // ---- Real Asset Registry actions ----
+    setAssetUnitStatus(id, status) { const a = (this.assets || []).find((x) => x.id === id); if (a) { a.status = status; this.logActivity('Asset ' + a.code + ' status -> ' + status); } },
+    reassignAsset(id, holder_type, holder) { const a = (this.assets || []).find((x) => x.id === id); if (!a) return; a.holder_type = holder_type || ''; a.holder = holder || ''; a.status = holder ? (holder_type === 'facility' ? 'Deployed' : 'Assigned') : 'In Warehouse'; this.logActivity('Asset ' + a.code + ' reassigned to ' + (holder || 'warehouse')); },
+    returnAsset(id, tracking) { const a = (this.assets || []).find((x) => x.id === id); if (!a) return; a.status = 'Returned'; if (tracking) a.return_tracking = tracking; this.logActivity('Asset ' + a.code + ' returned by ' + (a.holder || '—')); },
+    // terminated employee -> flag every asset they hold for recovery (then returnAsset finalises it)
+    recoverTerminatedAssets(name) { const list = (this.assets || []).filter((a) => a.holder_type === 'employee' && (a.holder || '') === name && a.status !== 'Returned'); list.forEach((a) => { a.status = 'Return Pending'; }); this.logActivity('Recovery started for ' + name + ' (' + list.length + ' asset' + (list.length === 1 ? '' : 's') + ')'); return list.length; },
+    // add / edit a tracked asset unit (Warehouse Manager). Holder is employee or facility only.
+    addAsset(klass, rec) { this.counters.asn = (this.counters.asn || 0) + 1; const a = { id: 'as-' + this.counters.asn, klass, holder_type: '', holder: '', emp_state: '', status: 'In Warehouse', ...rec }; this.assets.unshift(a); this.logActivity('Asset added: ' + (a.code || a.id) + ' (' + klass + ')'); return a; },
+    updateAsset(id, patch) { const a = (this.assets || []).find((x) => x.id === id); if (a) { Object.assign(a, patch); this.logActivity('Asset updated: ' + (a.code || id)); } return a; },
+    nextAssetCode(klass) { const meta = (this.assetClasses || []).find((c) => c.id === klass) || {}; const pre = meta.prefix || ''; let max = 0; (this.assets || []).filter((a) => a.klass === klass).forEach((a) => { const m = String(a.code || '').match(/(\d+)\s*$/); if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; } }); return (klass === 'cart' ? '' : pre) + String(max + 1).padStart(4, '0'); },
     _sync(item) { const q = item.lots.reduce((s, l) => s + l.qty, 0); item.qty_onhand = q; item.qty_available = q; },
     nextSku() { this.counters.sku += 1; return String(this.counters.sku); },
 

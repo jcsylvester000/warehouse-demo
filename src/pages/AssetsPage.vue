@@ -1,158 +1,285 @@
 <script setup>
-import { ref, reactive, computed } from 'vue';
+import { ref, reactive, computed, watch } from 'vue';
 import { useWarehouseStore, TODAY } from '@/stores/warehouse';
 import { useToast } from '@/composables/useToast';
-import { useDocViewer } from '@/composables/useDocViewer';
-import { money, uid } from '@/utils/format';
 import Hero from '@/components/ui/Hero.vue';
 import Card from '@/components/ui/Card.vue';
 import Badge from '@/components/ui/Badge.vue';
 import Btn from '@/components/ui/BaseButton.vue';
 import Modal from '@/components/ui/BaseModal.vue';
+import ReqTag from '@/components/ui/ReqTag.vue';
 
 const store = useWarehouseStore();
 const toast = useToast();
-const CART_ST = ['Available', 'Assigned', 'In repair', 'Retired'];
-const TRACKED_ST = ['In warehouse', 'Assigned', 'Shipped', 'In repair', 'Retired', 'Lost'];
-const FAC_ST = ['Active', 'In transit', 'Returned', 'Damaged'];
-const USER_ST = ['Active', 'Returned', 'Lost', 'Damaged'];
-function setStatus(collection, id, ev) { store.setAssetStatus(collection, id, ev.target.value); toast.success('Status updated to ' + ev.target.value + '.'); }
-const docViewer = useDocViewer();
-function viewDoc(name, kind, facility) { docViewer.open({ name, kind, facility }); }
-const tab = ref('warehouse');
 
-const warehouseCarts = computed(() => store.carts.filter((c) => c.location === 'Warehouse'));
-const assignedCarts = computed(() => store.carts.filter((c) => c.location !== 'Warehouse'));
-const chips = computed(() => [
-  { label: 'Carts in warehouse', value: warehouseCarts.value.length },
-  { label: 'Tracked assets', value: store.trackedAssets.length },
-  { label: 'Facility assets', value: store.facilityAssets.reduce((s, a) => s + (a.qty || 0), 0) },
-  { label: 'User assets', value: store.userAssets.length },
-]);
+const tab = ref('cart');
+const classes = computed(() => store.assetClassList);
+const meta = computed(() => store.assetClassMeta(tab.value));
 
-/* assign warehouse cart to a facility (mirror back to Inventory) */
-const showAssign = ref(false); const aCart = ref(null); const aFac = ref('');
-function openAssign(c) { aCart.value = c; aFac.value = store.facilities[0].id; showAssign.value = true; }
-function saveAssign() { store.setCartLocation(aCart.value, 'Facility', aFac.value); toast.success('Cart assigned to facility — reflected in Inventory.'); showAssign.value = false; }
-function returnToWarehouse(c) { store.setCartLocation(c, 'Warehouse', null); toast.info('Cart returned to warehouse — available in Inventory again.'); }
+const search = ref('');
+const statusFilter = ref('');
+const holderFilter = ref('');
 
-/* Cart Received (BOL + photos) */
+// pagination: default 10 per page; user can choose 10/20/30/40/50 (max 50)
+const pageSize = ref(10);
+const pageOptions = [10, 20, 30, 40, 50];
+const page = ref(1);
+
+function resetView() { search.value = ''; statusFilter.value = ''; holderFilter.value = ''; page.value = 1; }
+function pickTab(id) { tab.value = id; resetView(); }
+
+const STATUS_TONE = {
+  'In Warehouse': 'slate', 'Deployed': 'emerald', 'Assigned': 'blue', 'Out of Service': 'amber',
+  'Incomplete': 'amber', 'Retired': 'slate', 'Return Pending': 'rose', 'Returned': 'violet',
+  'Active': 'emerald', 'Deactivated': 'slate',
+};
+const tone = (st) => STATUS_TONE[st] || 'slate';
+
+const classAssets = computed(() => store.assetsOf(tab.value));
+const filtered = computed(() => {
+  const q = search.value.trim().toLowerCase();
+  return classAssets.value.filter((a) => {
+    if (statusFilter.value && a.status !== statusFilter.value) return false;
+    if (holderFilter.value === 'employee' && a.holder_type !== 'employee') return false;
+    if (holderFilter.value === 'facility' && a.holder_type !== 'facility') return false;
+    if (holderFilter.value === 'warehouse' && a.holder_type) return false;
+    if (!q) return true;
+    const hay = [a.code, a.holder, a.status, ...((meta.value.cols || []).map((c) => a[c[0]]))].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+});
+const total = computed(() => filtered.value.length);
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
+const paged = computed(() => { const start = (page.value - 1) * pageSize.value; return filtered.value.slice(start, start + pageSize.value); });
+const rangeLabel = computed(() => { if (!total.value) return '0 items'; const start = (page.value - 1) * pageSize.value + 1; const end = Math.min(total.value, page.value * pageSize.value); return start + '–' + end + ' of ' + total.value; });
+const statusesPresent = computed(() => [...new Set(classAssets.value.map((a) => a.status).filter(Boolean))]);
+const statusSummary = computed(() => statusesPresent.value.map((st) => ({ st, n: classAssets.value.filter((a) => a.status === st).length })));
+watch([search, statusFilter, holderFilter, tab, pageSize], () => { page.value = 1; });
+function prev() { if (page.value > 1) page.value--; }
+function next() { if (page.value < pageCount.value) page.value++; }
+
+function onStatus(a, ev) { store.setAssetUnitStatus(a.id, ev.target.value); toast.success(a.code + ' → ' + ev.target.value); }
+const cell = (a, key) => { const v = a[key]; if (v === true) return 'Yes'; if (v === false || v == null || v === '') return '—'; return v; };
+
+// ---------- add / edit an asset ----------
+const showEdit = ref(false);
+const editingId = ref(null);
+const form = reactive({ code: '', holder_type: '', holder: '', emp_state: '', status: 'In Warehouse', fields: {} });
+function blankFields() { const f = {}; (meta.value.cols || []).forEach((c) => { f[c[0]] = ''; }); return f; }
+function openAdd() { editingId.value = null; Object.assign(form, { code: store.nextAssetCode(tab.value), holder_type: '', holder: '', emp_state: '', status: 'In Warehouse', fields: blankFields() }); showEdit.value = true; }
+function openEdit(a) { editingId.value = a.id; const f = {}; (meta.value.cols || []).forEach((c) => { f[c[0]] = a[c[0]] != null ? a[c[0]] : ''; }); Object.assign(form, { code: a.code || '', holder_type: a.holder_type || '', holder: a.holder || '', emp_state: a.emp_state || '', status: a.status || 'In Warehouse', fields: f }); showEdit.value = true; }
+function saveEdit() {
+  if (!String(form.code).trim()) return toast.error('A Code / ID is required.');
+  const patch = { code: String(form.code).trim(), holder_type: form.holder_type, holder: form.holder_type ? String(form.holder).trim() : '', emp_state: form.holder_type === 'employee' ? String(form.emp_state).trim() : '', status: form.status, ...form.fields };
+  if (editingId.value) { store.updateAsset(editingId.value, patch); toast.success(patch.code + ' updated.'); }
+  else { store.addAsset(tab.value, patch); toast.success(patch.code + ' added.'); }
+  showEdit.value = false;
+}
+
+// ---------- export current view (WM reporting) ----------
+function exportCsv() {
+  const cols = meta.value.cols || [];
+  const head = ['Code', 'Holder type', 'Holder', 'State', 'Status', ...cols.map((c) => c[1])];
+  const esc = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const rows = filtered.value.map((a) => [a.code, a.holder_type || '', a.holder || '', a.emp_state || '', a.status || '', ...cols.map((c) => { const v = a[c[0]]; return v === true ? 'Yes' : (v === false || v == null ? '' : v); })]);
+  const csv = [head, ...rows].map((r) => r.map(esc).join(',')).join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const link = document.createElement('a'); link.href = url; link.download = meta.value.label.replace(/\s+/g, '_') + '_assets.csv'; link.click(); URL.revokeObjectURL(url);
+  toast.success('Exported ' + filtered.value.length + ' rows.');
+}
+
+// ---------- Returns from terminated employees ----------
+const recoverName = ref('');
+const recoverList = computed(() => store.assetsForEmployee(recoverName.value).filter((a) => a.status !== 'Returned'));
+function startRecovery(name) { const n = store.recoverTerminatedAssets(name); recoverName.value = name; toast.info(n + ' asset' + (n === 1 ? '' : 's') + ' flagged for recovery from ' + name + '.'); }
+function markReturned(a) { store.returnAsset(a.id); toast.success(a.code + ' marked returned.'); }
+const heldCount = (name) => store.assetsForEmployee(name).filter((a) => a.status !== 'Returned').length;
+
+// ---------- Cart Received ----------
 const showRecv = ref(false);
 const recv = reactive({ facility_id: '', received_on: TODAY, bol: '', photos: [] });
 function openRecv(fid) { const ship = store.facilities.filter((f) => f.cart_shipment_date && f.status !== 'Received'); Object.assign(recv, { facility_id: fid || (ship[0] && ship[0].id) || store.facilities[0].id, received_on: TODAY, bol: '', photos: [] }); showRecv.value = true; }
 function onBol(e) { const f = e.target.files && e.target.files[0]; if (f) recv.bol = f.name; }
 function onPhotos(e) { recv.photos = Array.from(e.target.files || []).map((f) => f.name); }
 function saveRecv() { if (!recv.bol) return toast.error('Upload the BOL to confirm receipt.'); store.confirmCartReceipt({ facility_id: recv.facility_id, received_on: recv.received_on, bol: recv.bol, photos: recv.photos }); const f = store.facilityById(recv.facility_id); toast.success('Cart receipt confirmed for ' + (f ? f.name : '') + '.'); showRecv.value = false; }
-const receiptFor = (fid) => store.cartReceipts.find((r) => r.facility_id === fid);
+
+const chips = computed(() => [
+  { label: 'Total assets', value: store.assetTotal },
+  { label: 'In warehouse', value: store.assetCountByStatus('', 'In Warehouse') },
+  { label: 'To recover', value: store.assetsToRecover.length, danger: store.assetsToRecover.length > 0 },
+]);
 </script>
 
 <template>
   <div>
-    <Hero title="Assets" subtitle="Warehouse carts, tracked assets, and facility/user assignments — mirrored with Inventory." :chips="chips" />
+    <Hero title="Assets" subtitle="Every tracked unit the company owns — carts and IT equipment — by class, holder and status." :chips="chips" />
 
-    <div class="mb-4 rounded-xl bg-indigo-50 ring-1 ring-indigo-100 px-4 py-3 text-sm text-indigo-900 flex items-start gap-2">
-      <p><b>Assets &amp; Inventory mirror.</b> An assembled cart marked <b>available in the warehouse</b> shows here and as available stock in <b>Inventory ▸ Carts</b>. Assigning it to a facility moves it out of warehouse availability in both places.</p>
+    <div class="-mt-2 mb-4 flex flex-wrap items-center gap-2">
+      <ReqTag ver="V5" code="ASSETS" text="NEW — the Assets section now holds all 8 real asset classes (Carts, Laptops, Game Shows, Tablets, Monitors, Desktops, Cell Phones, EZ Pass), seeded from your Cart List inventory." />
+      <ReqTag ver="V5" code="CART-FIELDS" text="NEW — corrected cart schema: Cart Type is the wheel (cta wheel 1/2, cta yellow, microlife); BP Machine is edan / vs8 / accutar." />
+      <ReqTag ver="V5" code="EDIT" text="NEW — add and edit any asset, with pagination (10–50 per page) for the large lists." />
+      <ReqTag ver="V5" code="RETURNS" text="NEW — terminated employees show their outstanding assets; Start recovery flags them and Mark returned closes them out." />
     </div>
 
-    <Card :padded="false">
-      <div class="flex items-center justify-between border-b border-slate-100 px-5">
-        <div class="flex">
-          <button class="px-4 py-3 text-sm font-semibold border-b-2 transition-colors" :class="tab==='warehouse'?'border-emerald-600 text-emerald-700':'border-transparent text-slate-500 hover:text-slate-700'" @click="tab='warehouse'">Warehouse Carts</button>
-          <button class="px-4 py-3 text-sm font-semibold border-b-2 transition-colors" :class="tab==='tracked'?'border-violet-600 text-violet-700':'border-transparent text-slate-500 hover:text-slate-700'" @click="tab='tracked'">Tracked Assets</button>
-          <button class="px-4 py-3 text-sm font-semibold border-b-2 transition-colors" :class="tab==='facility'?'border-amber-600 text-amber-700':'border-transparent text-slate-500 hover:text-slate-700'" @click="tab='facility'">Facility Assets</button>
-          <button class="px-4 py-3 text-sm font-semibold border-b-2 transition-colors" :class="tab==='users'?'border-blue-600 text-blue-700':'border-transparent text-slate-500 hover:text-slate-700'" @click="tab='users'">User Assets</button>
-          <button class="px-4 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2" :class="tab==='received'?'border-amber-500 text-amber-700':'border-transparent text-slate-500 hover:text-slate-700'" @click="tab='received'">Cart Received </button>
+    <div class="flex flex-wrap gap-1.5 mb-4">
+      <button v-for="c in classes" :key="c.id" class="px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors" :class="tab===c.id?'bg-indigo-600 text-white border-indigo-600':'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'" @click="pickTab(c.id)">
+        {{ c.label }} <span class="text-xs opacity-70">{{ store.assetClassCount(c.id) }}</span>
+      </button>
+      <button class="px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors" :class="tab==='returns'?'bg-rose-600 text-white border-rose-600':'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'" @click="pickTab('returns')">
+        Returns — Terminated <span class="text-xs opacity-70">{{ store.terminatedList.length }}</span>
+      </button>
+      <button class="px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors" :class="tab==='received'?'bg-emerald-600 text-white border-emerald-600':'bg-white border-slate-200 text-emerald-700 hover:bg-emerald-50'" @click="pickTab('received')">Cart Received</button>
+    </div>
+
+    <Card v-if="tab!=='returns' && tab!=='received'" :title="meta.label" :sub="total + ' total · showing ' + rangeLabel">
+      <!-- status summary (quick triage for the warehouse manager) -->
+      <div class="flex flex-wrap items-center gap-1.5 mb-3">
+        <button class="text-[11px] font-semibold px-2 py-1 rounded-full border" :class="!statusFilter?'bg-slate-800 text-white border-slate-800':'border-slate-200 text-slate-500'" @click="statusFilter=''">All {{ classAssets.length }}</button>
+        <button v-for="g in statusSummary" :key="g.st" class="text-[11px] font-semibold px-2 py-1 rounded-full border" :class="statusFilter===g.st?'bg-slate-800 text-white border-slate-800':'border-slate-200 text-slate-600'" @click="statusFilter = statusFilter===g.st ? '' : g.st">{{ g.st }} {{ g.n }}</button>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <input v-model="search" placeholder="Search code, holder, serial…" class="h-9 px-3 rounded-lg border border-slate-300 text-sm flex-1 min-w-[200px]" />
+        <div class="flex gap-1">
+          <button v-for="h in [['','All'],['employee','User Assets'],['facility','Facility'],['warehouse','In warehouse']]" :key="h[0]" class="px-2.5 h-9 rounded-lg text-xs font-semibold border" :class="holderFilter===h[0]?'bg-slate-800 text-white border-slate-800':'border-slate-200 text-slate-600'" @click="holderFilter=h[0]">{{ h[1] }}</button>
         </div>
-        <Btn v-if="tab==='received'" size="sm" @click="openRecv()">+ Confirm Receipt</Btn>
+        <Btn variant="secondary" size="sm" @click="exportCsv">Export CSV</Btn>
+        <Btn size="sm" @click="openAdd">+ Add {{ meta.label.replace(/s$/, '') }}</Btn>
       </div>
 
-      <!-- Warehouse carts (mirror of Inventory) -->
-      <div v-show="tab==='warehouse'" class="overflow-x-auto">
+      <div class="overflow-x-auto">
         <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider"><tr><th class="px-5 py-2.5 text-left font-semibold">Cart</th><th class="px-5 py-2.5 text-left font-semibold">Type</th><th class="px-5 py-2.5 text-left font-semibold">Components</th><th class="px-5 py-2.5 text-right font-semibold">Cost</th><th class="px-5 py-2.5 text-left font-semibold">Status</th><th class="px-5 py-2.5"></th></tr></thead>
-          <tbody class="divide-y divide-slate-100">
-            <tr v-for="c in warehouseCarts" :key="c.id" class="hover:bg-slate-50/60">
-              <td class="px-5 py-3 font-mono text-xs text-slate-600">{{ c.code }}</td><td class="px-5 py-3">{{ c.cart_type }}</td>
-              <td class="px-5 py-3 text-slate-600 text-xs">{{ c.components.length ? c.components.map(x=>x.qty+'× '+x.name).join(', ') : '—' }}</td>
-              <td class="px-5 py-3 text-right tabular-nums">{{ money(c.cost) }}</td>
-              <td class="px-5 py-3"><select :value="c.status" class="h-8 px-2 rounded border border-slate-300 text-xs" @change="setStatus('carts', c.id, $event)"><option v-for="o in CART_ST" :key="o">{{ o }}</option></select></td>
-              <td class="px-5 py-3 text-right"><Btn variant="soft-primary" size="sm" @click="openAssign(c)">Assign to facility</Btn></td>
+          <thead class="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider sticky top-0">
+            <tr>
+              <th class="text-left px-3 py-2">{{ tab==='cart' ? 'Cart #' : 'ID' }}</th>
+              <th class="text-left px-3 py-2">Holder</th>
+              <th class="text-left px-3 py-2">Status</th>
+              <th v-for="c in meta.cols" :key="c[0]" class="text-left px-3 py-2">{{ c[1] }}</th>
+              <th class="px-3 py-2"></th>
             </tr>
-            <tr v-if="!warehouseCarts.length"><td colspan="6" class="px-5 py-8 text-center text-slate-400">No carts in the warehouse — assemble one in Inventory ▸ Carts.</td></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr v-for="a in paged" :key="a.id" class="hover:bg-slate-50/60">
+              <td class="px-3 py-2 font-mono text-xs text-slate-700">{{ a.code }}<Badge v-if="a.legacy" tone="slate" class="ml-1">old</Badge></td>
+              <td class="px-3 py-2">
+                <span v-if="a.holder_type==='employee'" class="text-slate-700">\U0001F464 {{ a.holder }}<span v-if="a.emp_state" class="text-slate-400"> · {{ a.emp_state }}</span></span>
+                <span v-else-if="a.holder_type==='facility'" class="text-slate-700">\U0001F3E5 {{ a.holder }}</span>
+                <span v-else class="text-slate-400">— warehouse —</span>
+              </td>
+              <td class="px-3 py-2">
+                <select :value="a.status" class="h-7 px-1.5 rounded border border-slate-200 text-xs" @change="onStatus(a, $event)">
+                  <option v-for="o in store.assetStatusOptions" :key="o">{{ o }}</option>
+                </select>
+              </td>
+              <td v-for="c in meta.cols" :key="c[0]" class="px-3 py-2 text-slate-600">{{ cell(a, c[0]) }}</td>
+              <td class="px-3 py-2 text-right"><button class="text-xs font-semibold text-indigo-600 hover:underline" @click="openEdit(a)">Edit</button></td>
+            </tr>
+            <tr v-if="!total"><td :colspan="4 + meta.cols.length" class="px-3 py-8 text-center text-slate-400">No matching assets.</td></tr>
           </tbody>
         </table>
-        <div v-if="assignedCarts.length" class="px-5 py-3 border-t border-slate-100">
-          <div class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">Assigned to facilities</div>
-          <div class="flex flex-wrap gap-2">
-            <span v-for="c in assignedCarts" :key="c.id" class="inline-flex items-center gap-2 rounded-lg ring-1 ring-slate-200 px-3 py-1.5 text-xs">
-              <b>{{ c.code }}</b> → {{ (store.facilityById(c.facility_id)||{}).name }}
-              <button class="text-indigo-600 hover:underline" @click="returnToWarehouse(c)">return</button>
-            </span>
-          </div>
+      </div>
+
+      <!-- pagination controls -->
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-3">
+        <div class="flex items-center gap-2 text-sm text-slate-500">
+          <span>Rows per page</span>
+          <select v-model.number="pageSize" class="h-8 px-2 rounded-lg border border-slate-300 text-sm">
+            <option v-for="o in pageOptions" :key="o" :value="o">{{ o }}</option>
+          </select>
+          <span class="ml-1">{{ rangeLabel }}</span>
         </div>
-      </div>
-
-      <!-- Tracked assets -->
-      <div v-show="tab==='tracked'" class="overflow-x-auto">
-        <div class="px-5 py-3 text-xs text-slate-500 border-b border-slate-100">Serialized assets created when a trackable item type (laptops and trivia equipment) is received on a PO, or when a returned laptop is checked back in.</div>
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider"><tr><th class="px-5 py-2.5 text-left font-semibold">Asset Tag</th><th class="px-5 py-2.5 text-left font-semibold">Item</th><th class="px-5 py-2.5 text-left font-semibold">Type</th><th class="px-5 py-2.5 text-left font-semibold">Serial</th><th class="px-5 py-2.5 text-left font-semibold">Received</th><th class="px-5 py-2.5 text-left font-semibold">PO</th><th class="px-5 py-2.5 text-left font-semibold">Status</th></tr></thead>
-          <tbody class="divide-y divide-slate-100">
-            <tr v-for="a in store.trackedAssets" :key="a.id" class="hover:bg-slate-50/60">
-              <td class="px-5 py-3 font-mono text-xs text-slate-700">{{ a.asset_tag }}</td><td class="px-5 py-3 text-slate-700">{{ a.item }}</td><td class="px-5 py-3"><Badge tone="violet">{{ a.item_type }}</Badge></td><td class="px-5 py-3 font-mono text-xs text-slate-500">{{ a.serial || '—' }}</td><td class="px-5 py-3 text-slate-500">{{ a.received_at }}</td><td class="px-5 py-3 font-mono text-xs text-slate-500">{{ a.po }}</td><td class="px-5 py-3"><select :value="a.status" class="h-8 px-2 rounded border border-slate-300 text-xs" @change="setStatus('trackedAssets', a.id, $event)"><option v-for="o in TRACKED_ST" :key="o">{{ o }}</option></select></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Facility assets -->
-      <div v-show="tab==='facility'" class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider"><tr><th class="px-5 py-2.5 text-left font-semibold">Facility</th><th class="px-5 py-2.5 text-left font-semibold">Item</th><th class="px-5 py-2.5 text-left font-semibold">Asset Tag</th><th class="px-5 py-2.5 text-right font-semibold">Qty</th><th class="px-5 py-2.5 text-left font-semibold">Status</th></tr></thead>
-          <tbody class="divide-y divide-slate-100">
-            <tr v-for="a in store.facilityAssets" :key="a.id" class="hover:bg-slate-50/60"><td class="px-5 py-3 font-medium text-slate-800">{{ (store.facilityById(a.facility_id)||{}).name }}</td><td class="px-5 py-3 text-slate-700">{{ a.item }}</td><td class="px-5 py-3 font-mono text-xs text-slate-600">{{ a.asset_tag }}</td><td class="px-5 py-3 text-right tabular-nums">{{ a.qty }}</td><td class="px-5 py-3"><select :value="a.status" class="h-8 px-2 rounded border border-slate-300 text-xs" @change="setStatus('facilityAssets', a.id, $event)"><option v-for="o in FAC_ST" :key="o">{{ o }}</option></select></td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- User assets -->
-      <div v-show="tab==='users'" class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider"><tr><th class="px-5 py-2.5 text-left font-semibold">User</th><th class="px-5 py-2.5 text-left font-semibold">Facility</th><th class="px-5 py-2.5 text-left font-semibold">Item</th><th class="px-5 py-2.5 text-left font-semibold">Asset Tag</th><th class="px-5 py-2.5 text-left font-semibold">Status</th></tr></thead>
-          <tbody class="divide-y divide-slate-100">
-            <tr v-for="a in store.userAssets" :key="a.id" class="hover:bg-slate-50/60"><td class="px-5 py-3 font-medium text-slate-800">{{ a.user }}</td><td class="px-5 py-3 text-slate-600">{{ a.facility }}</td><td class="px-5 py-3 text-slate-700">{{ a.item }}</td><td class="px-5 py-3 font-mono text-xs text-slate-600">{{ a.asset_tag }}</td><td class="px-5 py-3"><select :value="a.status" class="h-8 px-2 rounded border border-slate-300 text-xs" @change="setStatus('userAssets', a.id, $event)"><option v-for="o in USER_ST" :key="o">{{ o }}</option></select></td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Cart Received -->
-      <div v-show="tab==='received'" class="p-5 space-y-4">
-        <div class="rounded-xl bg-amber-50 ring-1 ring-amber-200 px-4 py-3 text-sm text-amber-900 flex items-start gap-2"><p><b>Cart Received step.</b> Confirm Cart Received and upload the BOL + delivery photos to close the cart-fulfillment loop.</p></div>
-        <div class="grid gap-4 lg:grid-cols-2">
-          <div v-for="f in store.facilities" :key="f.id" class="rounded-xl border border-slate-200 p-4">
-            <div class="flex items-start justify-between"><div><div class="font-semibold text-slate-800">{{ f.name }}</div><div class="text-xs text-slate-500">{{ f.city }}</div></div><Badge :tone="f.status==='Received'?'emerald':f.status==='Shipping'?'amber':'slate'">{{ f.status }}</Badge></div>
-            <div class="mt-3 grid grid-cols-3 gap-2 text-sm"><div><div class="text-[10px] uppercase tracking-wide text-slate-400">Carts</div><div class="font-semibold tabular-nums">{{ f.carts_needed ?? '—' }}</div></div><div><div class="text-[10px] uppercase tracking-wide text-slate-400">Ship date</div><div class="font-semibold">{{ f.cart_shipment_date || '—' }}</div></div><div><div class="text-[10px] uppercase tracking-wide text-slate-400">Floor plan</div><div><Badge v-if="f.floor_plan" tone="indigo" class="cursor-pointer hover:ring-2 hover:ring-indigo-200" @click="viewDoc(f.floor_plan,'floorplan',f)">📎 file</Badge><span v-else class="text-slate-400">—</span></div></div></div>
-            <div v-if="receiptFor(f.id)" class="mt-3 rounded-lg bg-emerald-50 ring-1 ring-emerald-100 px-3 py-2 text-xs text-emerald-800">Received {{ receiptFor(f.id).received_on }} · BOL <b>{{ receiptFor(f.id).bol_name }}</b><span v-if="receiptFor(f.id).photos.length"> · {{ receiptFor(f.id).photos.length }} photo(s)</span></div>
-            <div v-else-if="f.cart_shipment_date" class="mt-3"><Btn variant="soft-success" size="sm" @click="openRecv(f.id)">Confirm Cart Received</Btn></div>
-            <div v-else class="mt-3 text-xs text-slate-400">Cart shipment date not set — schedule it on the dashboard first.</div>
-          </div>
+        <div class="flex items-center gap-1">
+          <Btn variant="secondary" size="sm" :disabled="page<=1" @click="prev">← Prev</Btn>
+          <span class="text-sm text-slate-600 px-2">Page {{ page }} / {{ pageCount }}</span>
+          <Btn variant="secondary" size="sm" :disabled="page>=pageCount" @click="next">Next →</Btn>
         </div>
       </div>
     </Card>
 
-    <!-- assign cart -->
-    <Modal v-if="showAssign" title="Assign cart to facility" @close="showAssign=false">
-      <label class="text-sm block"><span class="block text-slate-600 mb-1">Facility</span><select v-model="aFac" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm"><option v-for="f in store.facilities" :key="f.id" :value="f.id">{{ f.name }}</option></select></label>
-      <template #footer><Btn variant="secondary" @click="showAssign=false">Cancel</Btn><Btn @click="saveAssign">Assign</Btn></template>
+    <div v-else-if="tab==='returns'" class="grid gap-5 lg:grid-cols-2 items-start">
+      <Card title="Terminated employees" sub="Their company assets must be recovered.">
+        <div class="space-y-2 max-h-[60vh] overflow-y-auto">
+          <div v-for="t in store.terminatedList" :key="t.id" class="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
+            <div class="flex-1 min-w-0">
+              <div class="font-semibold text-slate-800 text-sm">{{ t.name }}</div>
+              <div class="text-[11px] text-slate-500">{{ t.role || '—' }}<span v-if="t.personal_email"> · {{ t.personal_email }}</span></div>
+            </div>
+            <Badge :tone="heldCount(t.name) ? 'rose' : 'emerald'">{{ heldCount(t.name) }} to recover</Badge>
+            <Btn size="sm" :variant="heldCount(t.name)?'soft-primary':'secondary'" :disabled="!heldCount(t.name)" @click="startRecovery(t.name)">Start recovery →</Btn>
+          </div>
+          <p v-if="!store.terminatedList.length" class="text-center text-slate-400 py-6 text-sm">No terminated employees.</p>
+        </div>
+      </Card>
+      <Card :title="recoverName ? ('Assets held by ' + recoverName) : 'Select an employee'" :sub="recoverName ? (recoverList.length + ' outstanding') : 'Click Start recovery to list their assets.'">
+        <div v-if="recoverName" class="space-y-2 max-h-[60vh] overflow-y-auto">
+          <div v-for="a in recoverList" :key="a.id" class="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2">
+            <Badge tone="indigo">{{ store.assetClassMeta(a.klass).label }}</Badge>
+            <span class="font-mono text-xs text-slate-600">{{ a.code }}</span>
+            <Badge :tone="tone(a.status)" class="ml-auto">{{ a.status }}</Badge>
+            <Btn size="sm" variant="success" @click="markReturned(a)">Mark returned</Btn>
+          </div>
+          <p v-if="!recoverList.length" class="text-center text-emerald-600 py-6 text-sm">All assets recovered.</p>
+        </div>
+        <p v-else class="text-center text-slate-400 py-10 text-sm">No employee selected.</p>
+      </Card>
+    </div>
+
+    <Card v-else title="Cart Received" sub="Confirm a facility's carts arrived (BOL + photos).">
+      <div class="flex justify-end mb-3"><Btn size="sm" @click="openRecv()">+ Confirm cart received</Btn></div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider"><tr><th class="text-left px-4 py-2">Facility</th><th class="text-left px-4 py-2">Qty</th><th class="text-left px-4 py-2">Shipment date</th><th class="text-left px-4 py-2">Received</th><th class="text-left px-4 py-2">BOL</th></tr></thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr v-for="r in store.cartReceipts" :key="r.id" class="hover:bg-slate-50/60">
+              <td class="px-4 py-2 text-slate-700">{{ (store.facilityById(r.facility_id)||{}).name || r.facility_id }}</td>
+              <td class="px-4 py-2">{{ r.shipped_qty || '—' }}</td>
+              <td class="px-4 py-2 text-slate-500">{{ r.shipment_date || '—' }}</td>
+              <td class="px-4 py-2 text-slate-500">{{ r.received_on }}</td>
+              <td class="px-4 py-2 text-emerald-700">{{ r.bol_name }}</td>
+            </tr>
+            <tr v-if="!store.cartReceipts.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">No cart receipts yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </Card>
+
+    <!-- add / edit asset -->
+    <Modal v-if="showEdit" :title="(editingId?'Edit ':'Add ') + meta.label.replace(/s$/, '')" :sub="editingId ? form.code : 'New ' + meta.label.replace(/s$/, '') + ' — holder is an employee or a facility.'" wide @close="showEdit=false">
+      <div class="space-y-4">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="text-sm"><span class="block text-slate-600 mb-1">{{ tab==='cart' ? 'Cart #' : 'ID' }} <span class="text-rose-500">*</span></span><input v-model="form.code" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+          <label class="text-sm"><span class="block text-slate-600 mb-1">Status</span><select v-model="form.status" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm"><option v-for="o in store.assetStatusOptions" :key="o">{{ o }}</option></select></label>
+        </div>
+        <div class="rounded-lg bg-slate-50 ring-1 ring-slate-100 p-3">
+          <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Holder <ReqTag ver="V5" code="HOLDER" text="A cart is held by a Facility; IT equipment by an Employee. Leave as None to keep it in the warehouse." /></div>
+          <div class="grid grid-cols-3 gap-3">
+            <label class="text-sm"><span class="block text-slate-600 mb-1">Held by</span>
+              <select v-model="form.holder_type" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm">
+                <option value="">None (warehouse)</option>
+                <option value="employee">Employee</option>
+                <option value="facility">Facility</option>
+              </select>
+            </label>
+            <label class="text-sm" :class="form.holder_type ? '' : 'opacity-40'"><span class="block text-slate-600 mb-1">{{ form.holder_type==='facility' ? 'Facility name' : 'Employee name' }}</span><input v-model="form.holder" :disabled="!form.holder_type" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm disabled:bg-slate-100" /></label>
+            <label class="text-sm" :class="form.holder_type==='employee' ? '' : 'opacity-40'"><span class="block text-slate-600 mb-1">State</span><input v-model="form.emp_state" :disabled="form.holder_type!=='employee'" placeholder="e.g. NJ" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm disabled:bg-slate-100" /></label>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">{{ meta.label }} details</div>
+          <div class="grid grid-cols-2 gap-3">
+            <label v-for="c in meta.cols" :key="c[0]" class="text-sm"><span class="block text-slate-600 mb-1">{{ c[1] }}</span><input v-model="form.fields[c[0]]" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+          </div>
+        </div>
+      </div>
+      <template #footer><Btn variant="secondary" @click="showEdit=false">Cancel</Btn><Btn @click="saveEdit">{{ editingId ? 'Save changes' : 'Add asset' }}</Btn></template>
     </Modal>
 
-    <!-- cart received -->
-    <Modal v-if="showRecv" title="Confirm Cart Received" sub="Upload BOL and delivery photos" @close="showRecv=false">
-      <div class="space-y-4">
+    <Modal v-if="showRecv" title="Confirm cart received" sub="Upload the BOL (required) and any delivery photos." @close="showRecv=false">
+      <div class="space-y-3">
         <label class="text-sm block"><span class="block text-slate-600 mb-1">Facility</span><select v-model="recv.facility_id" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm"><option v-for="f in store.facilities" :key="f.id" :value="f.id">{{ f.name }}</option></select></label>
         <label class="text-sm block"><span class="block text-slate-600 mb-1">Received on</span><input v-model="recv.received_on" type="date" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
-        <div class="rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/40 p-4 text-center"><div class="text-sm font-semibold text-slate-700 mb-1">Bill of Lading (BOL)</div><input type="file" class="text-xs" @change="onBol" /><div v-if="recv.bol" class="mt-2 text-xs text-emerald-700">✓ {{ recv.bol }}</div></div>
-        <div class="rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/40 p-4 text-center"><div class="text-sm font-semibold text-slate-700 mb-1">Delivery photos</div><input type="file" multiple class="text-xs" @change="onPhotos" /><div v-if="recv.photos.length" class="mt-2 flex flex-wrap gap-1 justify-center"><span v-for="p in recv.photos" :key="p" class="text-[11px] bg-white ring-1 ring-slate-200 rounded px-2 py-0.5">{{ p }}</span></div></div>
+        <label class="text-sm block"><span class="block text-slate-600 mb-1">BOL <span class="text-rose-500">*</span></span><input type="file" class="text-xs" @change="onBol" /><span v-if="recv.bol" class="text-xs text-emerald-700 ml-2">{{ recv.bol }}</span></label>
+        <label class="text-sm block"><span class="block text-slate-600 mb-1">Delivery photos</span><input type="file" multiple class="text-xs" @change="onPhotos" /><span v-if="recv.photos.length" class="text-xs text-slate-500 ml-2">{{ recv.photos.length }} photo(s)</span></label>
       </div>
       <template #footer><Btn variant="secondary" @click="showRecv=false">Cancel</Btn><Btn variant="success" @click="saveRecv">Confirm received</Btn></template>
     </Modal>
