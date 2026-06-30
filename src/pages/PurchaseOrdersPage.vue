@@ -48,7 +48,7 @@ function onPick(id) {
     if (form.items.some((l) => l.kind === 'group' && l.group_id === id)) return;
     const exp = store.expandGroup(id, 1);
     const members = Object.keys(exp).map((k) => ({ vendor_item_id: k, name: (store.itemById(k) || {}).name, per_group: exp[k], unit_cost: (store.itemById(k) || {}).cost || 0 }));
-    form.items.push({ id: uid('pol'), kind: 'group', group_id: id, name: g.name, qty: 1, qty_received: 0, members, expanded: true });
+    form.items.push({ id: uid('pol'), kind: 'group', group_id: id, name: g.name, qty: 1, qty_received: 0, members, expanded: false });
     return;
   }
   addItemLine(id, 1);
@@ -87,13 +87,13 @@ function openManageVendors() { showManageVendors.value = true; }
 
 /* ---------- PO detail hub (view all items, status dropdown, notes, payments, landed) ---------- */
 const showPO = ref(false); const cur = ref(null);
-function openPO(po) { cur.value = po; showPO.value = true; }
+function openPO(po) { cur.value = po; pay.amount = store.poRemaining(po) > 0 ? store.poRemaining(po) : ''; showPO.value = true; }
 function setStatus(po, ev) { store.setPoStatus(po, ev.target.value); toast.info(po.po_number + ' → ' + po.progress); }
 const pay = reactive({ amount: '', file: '', note: '' });
 function onPayFile(e) { const f = e.target.files && e.target.files[0]; if (f) pay.file = f.name; }
 function addPayment(po) { if (!(Number(pay.amount) > 0)) return toast.error('Enter a payment amount.'); store.addPoPayment(po, { amount: pay.amount, file: pay.file, note: pay.note }); Object.assign(pay, { amount: '', file: '', note: '' }); toast.success('Payment recorded.'); }
-const dlc = reactive({ label: '', amount: '' });
-function addDetailLanded(po) { if (!dlc.label.trim() || !(Number(dlc.amount) > 0)) return toast.error('Enter a label and amount.'); store.addPoLanded(po, dlc.label.trim(), dlc.amount); Object.assign(dlc, { label: '', amount: '' }); }
+const dlc = reactive({ label: '', amount: '', owed: false });
+function addDetailLanded(po) { if (!dlc.label.trim() || !(Number(dlc.amount) > 0)) return toast.error('Enter a label and amount.'); store.addPoLanded(po, dlc.label.trim(), dlc.amount, dlc.owed); Object.assign(dlc, { label: '', amount: '', owed: false }); }
 function saveNotes(po) { toast.success(po.po_number + ' saved.'); showPO.value = false; } // R3 PO #2: Save closes the PO
 const depositPct = (po) => { const v = store.vendors.find((x) => x.id === po.vendor_id); return v ? (Number(v.deposit_percent) || 0) : 0; };
 const detailSuggestedDeposit = (po) => store.poDepositFor(po.vendor_id, store.poGoodsTotal(po));
@@ -203,14 +203,14 @@ onMounted(() => { const d = store.takePoDraft(); if (d && d.length) { openForm()
           <div class="rounded-xl border border-amber-200 overflow-hidden">
             <div class="px-4 py-2 bg-amber-50 border-b border-amber-100 text-xs font-semibold uppercase tracking-wide text-amber-800 flex items-center gap-2">Landed costs · internal only</div>
             <div class="p-3 space-y-2">
-              <div v-for="x in (cur.landed_costs||[])" :key="x.id" class="flex items-center justify-between text-sm"><span class="text-slate-600">{{ x.label }}</span><span class="tabular-nums font-medium">{{ money(x.amount) }} <button class="text-rose-400 ml-1" @click="store.removePoLanded(cur, x.id)">&times;</button></span></div>
+              <div v-for="x in (cur.landed_costs||[])" :key="x.id" class="flex items-center gap-2 text-sm"><span class="text-slate-600 flex-1">{{ x.label }}<Badge v-if="x.attach_to_owed" tone="rose" class="ml-1">owed</Badge></span><label class="text-[10px] inline-flex items-center gap-1 text-slate-500" title="The vendor is billing us for this; add it to the amount owed."><input type="checkbox" :checked="x.attach_to_owed" @change="store.setLandedOwed(cur, x.id, $event.target.checked)" /> bill us</label><span class="tabular-nums font-medium">{{ money(x.amount) }} <button class="text-rose-400 ml-1" @click="store.removePoLanded(cur, x.id)">&times;</button></span></div>
               <p v-if="!(cur.landed_costs||[]).length" class="text-xs text-slate-400">None yet.</p>
               <div class="flex items-end gap-2 pt-2 border-t border-amber-100">
                 <label class="text-xs flex-1"><span class="block text-slate-500 mb-1">What for</span><input v-model="dlc.label" placeholder="e.g. Ocean freight" class="w-full h-8 px-2 rounded border border-amber-300 text-sm" /></label>
                 <label class="text-xs w-24"><span class="block text-slate-500 mb-1">Amount</span><input v-model="dlc.amount" type="number" step="0.01" class="w-full h-8 px-2 rounded border border-amber-300 text-sm" /></label>
-                <Btn variant="secondary" size="sm" @click="addDetailLanded(cur)">Add Landed Cost</Btn>
+                <label class="text-xs inline-flex items-center gap-1 text-slate-600 pb-1"><input v-model="dlc.owed" type="checkbox" /> Bill us</label><Btn variant="secondary" size="sm" @click="addDetailLanded(cur)">Add Landed Cost</Btn>
               </div>
-              <p class="text-[11px] text-amber-700">Total landed <b>{{ money(store.poLandedTotal(cur)) }}</b> — spread per unit at receiving. Not sent to the vendor.</p>
+              <p class="text-[11px] text-amber-700">Total landed <b>{{ money(store.poLandedTotal(cur)) }}</b> — spread per unit at receiving. <ReqTag ver="V6" code="PO-4" text="V6 PO 4 — tick bill-us when the vendor invoices us for a landed cost so it adds to the amount owed; leave it unticked when paid externally." /> Tick bill-us to add a cost to the amount owed.</p>
             </div>
           </div>
           <!-- payments (editable, changed-flag, total, remaining) -->
@@ -218,7 +218,7 @@ onMounted(() => { const d = store.takePoDraft(); if (d && d.length) { openForm()
             <div class="px-4 py-2 bg-slate-50 border-b border-slate-100 text-xs font-semibold uppercase tracking-wide text-slate-500">Payments to vendor <ReqTag code="PO-4" text="V3 PO #4 — Payments are editable, show a 'changed' indicator, and a running total." /> <ReqTag ver="V4" code="PO-2" text="V4 PO #2 — Once a deposit is recorded, the Record-Deposit option disappears." /></div>
             <div class="p-3 space-y-2">
               <div v-if="!(cur.payments||[]).some(p=>p.note==='Deposit')" class="flex items-end gap-2 pb-2 border-b border-slate-100">
-                <label class="text-xs"><span class="block text-slate-500 mb-1">Deposit (auto {{ depositPct(cur) }}%)</span><input v-model.number="cur.deposit" type="number" step="0.01" class="w-28 h-8 px-2 rounded border border-slate-300 text-sm" /></label>
+                <label class="text-xs"><span class="block text-slate-500 mb-1">Deposit (auto {{ depositPct(cur) }}%) <ReqTag ver="V6" code="PO-2" text="V6 PO 2 — a dollar symbol sits next to the deposit amount." /></span><div class="flex items-center"><span class="px-2 h-8 inline-flex items-center rounded-l border border-r-0 border-slate-300 bg-slate-50 text-slate-500 text-sm">$</span><input v-model.number="cur.deposit" type="number" step="0.01" class="w-24 h-8 px-2 rounded-r border border-slate-300 text-sm" /></div></label>
                 <button class="text-[11px] text-indigo-600 underline pb-2" @click="useAutoDeposit(cur)">use {{ money(detailSuggestedDeposit(cur)) }}</button>
                 <Btn variant="secondary" size="sm" class="ml-auto" @click="recordDeposit(cur)">Record deposit as payment</Btn>
               </div>

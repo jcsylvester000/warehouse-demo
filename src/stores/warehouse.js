@@ -135,7 +135,9 @@ function seed() {
     cartReceipts: [],
     vendorBills: [],
     shipments: [],     // combined shipments (S3)
+    shipQueue: [],     // V6 SO-3: confirming an SO queues a shipment here
     returns: [],       // asset return orders (R1–R4)
+    settings: { refurbCreditRate: 0.8 }, // V6 CA-3: returned-cart credit/value = book cost × this rate (placeholder formula; change when the real refund formula is provided)
     emails: [],        // simulated sent/notification log
 
     // --- Role & Permissions (unchanged) ---
@@ -335,6 +337,11 @@ function seed() {
   // they sit in inventory and can only leave the warehouse after being assembled into a tracked unit.
   const ASSEMBLY_ONLY_TYPES = ['t-laptop', 't-trivia', 't-gameshow'];
   db.items.forEach((it) => { const q = it.lots.reduce((s, l) => s + l.qty, 0); it.qty_onhand = q; it.qty_available = q; if (it.assembly_only === undefined) it.assembly_only = ASSEMBLY_ONLY_TYPES.includes(it.item_type_id); it.is_tracked_asset = false; });
+  // V6 INV-2: the "master" full-cart groups can only ship as an assembly; their member parts still ship loose.
+  ['g-edanstarter', 'g-facility'].forEach((id) => { const g = db.groups.find((x) => x.id === id); if (g) g.assembly_only = true; });
+  (db.groups || []).forEach((g) => { if (g.assembly_only === undefined) g.assembly_only = false; });
+  // V6 CA + Q2: every assembled cart unit carries a condition (New vs Refurbished) and a real cart type.
+  (db.carts || []).forEach((c) => { if (c.condition === undefined) c.condition = 'New'; if (c.cart_type === 'Standard') c.cart_type = 'EDAN Cart'; });
 
   // ---- Real Asset Registry (seeded from the Cart List inventory) ----
   // Adheres to the amendment: a Cart is a cart-assembly (assigned to a Facility + Regional);
@@ -468,6 +475,16 @@ export const useWarehouseStore = defineStore('warehouse', {
     assemblyUnitCost() { return (defId) => { const exp = this.expandAssembly(defId, 1); return r2(Object.keys(exp).reduce((s, k) => s + exp[k] * this.fifoUnitCost(k), 0)); }; },
     assemblyBuildable() { return (defId) => { const exp = this.expandAssembly(defId, 1); const ks = Object.keys(exp); if (!ks.length) return 0; return Math.floor(Math.min(...ks.map((k) => { const it = this.itemById(k); return it ? (it.qty_onhand || 0) / exp[k] : 0; }))); }; },
     availableUnits(s) { return (defId) => (s.carts || []).filter((c) => c.assembly_id === defId && c.location === 'Warehouse'); },
+    // V6 CA/SO-5: pick from a specific pool — New vs Refurbished — never auto-mixed.
+    availableUnitsByCondition(s) { return (defId, condition) => (s.carts || []).filter((c) => c.assembly_id === defId && c.location === 'Warehouse' && (!condition || (c.condition || 'New') === condition)); },
+    refurbCreditRate(s) { return (s.settings && s.settings.refurbCreditRate != null) ? s.settings.refurbCreditRate : 0.8; },
+    // V6 CA-3: the refund logic — how much we credit the facility on return, and what the refurbished cart is then worth.
+    // Placeholder until the real refund formula is provided; swap this one function and the whole app follows.
+    refurbishedValue() { return (bookCost) => r2(Math.max(0, (Number(bookCost) || 0) * this.refurbCreditRate)); },
+    groupAssemblyOnly(s) { return (id) => { const g = (s.groups || []).find((x) => x.id === id); return !!(g && g.assembly_only); }; },
+    // V6 SO-4: one robust availability number per SO line (assembly -> built units; group -> min member; item -> on hand).
+    soLineAvailable() { return (l) => this.soLineMaxShippable(l); },
+    shippingQueue(s) { return s.shipQueue || []; },
     availableAssetUnits(s) { return (itemName) => (s.trackedAssets || []).filter((a) => a.status === 'In warehouse' && (!itemName || a.item === itemName)); },
     // unified catalog: single items + groups, all behaving as "items" in one searchable list
     catalog(s) {
@@ -486,7 +503,7 @@ export const useWarehouseStore = defineStore('warehouse', {
     catalogShip(s) {
       // assembly-only items (raw laptops/gameshows) cannot be shipped loose — only their assembled units can.
       const singles = s.items.filter((i) => !i.assembly_only).map((i) => ({ id: i.id, sku: i.sku, name: i.name, is_group: false, on_hand: i.qty_onhand }));
-      const grps = s.groups.map((g) => ({ id: g.id, sku: g.sku, name: g.name, is_group: true, on_hand: this.groupOnHand(g.id) }));
+      const grps = s.groups.filter((g) => !g.assembly_only).map((g) => ({ id: g.id, sku: g.sku, name: g.name, is_group: true, on_hand: this.groupOnHand(g.id) }));
       const asms = (s.assemblies || []).map((a) => ({ id: a.id, sku: a.sku, name: a.name, is_group: false, is_assembly: true, on_hand: this.availableUnits(a.id).length }));
       return [...singles, ...grps, ...asms];
     },
@@ -587,7 +604,7 @@ export const useWarehouseStore = defineStore('warehouse', {
     },
     updateItem(id, patch) { const it = this.itemById(id); if (it) Object.assign(it, patch); },
     deactivateItem(id) { const it = this.itemById(id); if (it) it.is_active = false; const g = this.groupById(id); if (g) g.is_active = false; },
-    addGroup({ name, description, members }) { const g = { id: uid('g'), sku: this.nextSku(), name, description: description || '', is_active: true, is_group: true, members: members || [] }; this.groups.unshift(g); return g; },
+    addGroup({ name, description, members, assembly_only }) { const g = { id: uid('g'), sku: this.nextSku(), name, description: description || '', is_active: true, is_group: true, assembly_only: !!assembly_only, members: members || [] }; this.groups.unshift(g); return g; },
     updateGroup(id, patch) { const g = this.groupById(id); if (g) Object.assign(g, patch); },
 
     // ---- Purchase Orders ----
@@ -599,7 +616,8 @@ export const useWarehouseStore = defineStore('warehouse', {
     setPoStatus(po, stage) { po.progress = stage; },           // R2 PO #2: dropdown sets status
     updatePO(id, patch) { const i = this.purchaseOrders.findIndex((p) => p.id === id); if (i > -1) this.purchaseOrders[i] = { ...this.purchaseOrders[i], ...patch }; },
     poLandedTotal(po) { return r2((po.landed_costs || []).reduce((s, x) => s + (Number(x.amount) || 0), 0)); },
-    addPoLanded(po, label, amount) { (po.landed_costs = po.landed_costs || []).push({ id: uid('lc'), label: label || 'Landed', amount: Number(amount) || 0 }); }, // R2 PO #5 multiple, internal
+    addPoLanded(po, label, amount, attach_to_owed) { (po.landed_costs = po.landed_costs || []).push({ id: uid('lc'), label: label || 'Landed', amount: Number(amount) || 0, attach_to_owed: !!attach_to_owed }); }, // R2 PO #5 + V6 PO-4 owed toggle
+    setLandedOwed(po, lcId, owed) { const x = (po.landed_costs || []).find((l) => l.id === lcId); if (x) x.attach_to_owed = !!owed; }, // V6 PO-4
     removePoLanded(po, lcId) { po.landed_costs = (po.landed_costs || []).filter((x) => x.id !== lcId); },
     addPoPayment(po, { amount, file, note }) { const amt = Number(amount) || 0; (po.payments = po.payments || []).push({ id: uid('pay'), amount: amt, original_amount: amt, edited: false, file: file || '', note: note || '', at: new Date().toISOString() }); }, // R2 PO #4
     updatePoPayment(po, payId, patch) { const p = (po.payments || []).find((x) => x.id === payId); if (!p) return; if (patch.amount != null) { p.amount = Number(patch.amount) || 0; p.edited = p.amount !== p.original_amount; } if (patch.note != null) p.note = patch.note; }, // R3 PO #4 editable + changed flag
@@ -608,7 +626,8 @@ export const useWarehouseStore = defineStore('warehouse', {
     poLineGoods(l) { if (l && l.kind === 'group') return r2((Number(l.qty) || 0) * (l.members || []).reduce((s, m) => s + (Number(m.per_group) || 0) * (Number(m.unit_cost) || 0), 0)); return r2((Number(l.qty) || 0) * (Number(l.unit_cost) || 0)); }, // V4 PO-1: group line scales
     poGoodsTotal(po) { return r2((po.items || []).reduce((s, l) => s + this.poLineGoods(l), 0)); },
     poTotalWithLanded(po) { return r2(this.poGoodsTotal(po) + this.poLandedTotal(po)); }, // R3 SO #3: reconciles with SO cost
-    poRemaining(po) { return r2(this.poGoodsTotal(po) - this.poPaymentsTotal(po)); }, // R3 PO #3: remaining owed after receiving/payments
+    poLandedOwed(po) { return r2((po.landed_costs || []).reduce((s, x) => s + (x.attach_to_owed ? (Number(x.amount) || 0) : 0), 0)); }, // V6 PO-4: landed billed by the vendor adds to what we owe
+    poRemaining(po) { return r2(this.poGoodsTotal(po) + this.poLandedOwed(po) - this.poPaymentsTotal(po)); }, // R3 PO #3 + V6 PO-4
     poDepositFor(vendor_id, total) { const v = this.vendors.find((x) => x.id === vendor_id); const pct = v ? (Number(v.deposit_percent) || 0) : 0; return r2((Number(total) || 0) * pct / 100); }, // R3 PO #1: deposit auto-fills from vendor rules
     sendPoToVendor(po, cc, resend) {
       const v = this.vendors.find((x) => x.id === po.vendor_id);
@@ -670,11 +689,12 @@ export const useWarehouseStore = defineStore('warehouse', {
       let cost = 0; const comp = [];
       components.forEach((c) => { const r = this.issueFIFO(c.vendor_item_id, c.qty); const it = this.itemById(c.vendor_item_id); cost += r.total; comp.push({ vendor_item_id: c.vendor_item_id, name: it ? it.name : '', qty: r.qty, unit_cost: r2(r.total / Math.max(1, r.qty)) }); this.logStock(c.vendor_item_id, 'out', c.qty, 'Cart assembly', code, null); });
       this.counters.cart += 1;
-      const cart = { id: uid('cart'), code: code || ('CART-A-' + String(this.counters.cart).padStart(4, '0')), cart_type: cart_type || 'Standard', status: 'Available', location: 'Warehouse', facility_id: null, cost: r2(cost), components: comp };
+      const cart = { id: uid('cart'), code: code || ('CART-A-' + String(this.counters.cart).padStart(4, '0')), cart_type: cart_type || ((this.assemblyTypes[0] || {}).name) || 'EDAN Cart', condition: 'New', status: 'Available', location: 'Warehouse', facility_id: null, cost: r2(cost), components: comp };
       this.carts.unshift(cart);
       return cart;
     },
     setCartLocation(cart, location, facility_id) { cart.location = location; cart.facility_id = facility_id || null; cart.status = location === 'Warehouse' ? 'Available' : 'Assigned'; },
+    setRefurbCreditRate(rate) { this.settings = this.settings || {}; this.settings.refurbCreditRate = Math.max(0, Math.min(1, Number(rate) || 0)); }, // V6 CA-3
 
     // Ship SO: FIFO-issue (captures base+landed so landed RIDES ALONG on ship-out — R2 PO #5 bug fix).
     shipSO(so, rows, outboundLanded) {
@@ -804,6 +824,17 @@ export const useWarehouseStore = defineStore('warehouse', {
       so.items.forEach((l) => { const fid = l.facility_id || so.facility_id; const shipped = l.qty_shipped || 0; const rem = Math.max(0, (l.qty || 0) - shipped); const cost = (l.shipped_cost_total || 0) + rem * this.soLineUnitCost(l); out[fid] = r2((out[fid] || 0) + cost); });
       return out;
     },
+    // V6 SO-3: confirming an SO moves it to in-progress AND queues a shipment in the shipping queue.
+    confirmSo(so) {
+      if (so.status === 'draft' || so.status === 'backorder') so.status = 'in_progress';
+      const exists = (this.shipQueue || []).some((q) => q.so_number === so.so_number && q.status !== 'Shipped');
+      if (!exists) {
+        this.shipQueue.unshift({ id: uid('sq'), so_number: so.so_number, recipient_type: so.recipient_type, recipient_id: so.recipient_id, facility_id: so.facility_id || null, regional_id: so.regional_id || null, status: 'Queued', created_at: new Date().toISOString() });
+        this.logActivity('Shipment queued for ' + so.so_number);
+      }
+      return so;
+    },
+    markQueuedShipped(so_number) { (this.shipQueue || []).forEach((q) => { if (q.so_number === so_number) q.status = 'Shipped'; }); },
     combineSOs(soIds, shipping_cost) {
       const sos = this.salesOrders.filter((s) => soIds.includes(s.id)); if (sos.length < 2) return null;
       const regional_id = sos[0].regional_id || (this.facilityById(sos[0].facility_id) || {}).regional_id;
@@ -855,7 +886,7 @@ export const useWarehouseStore = defineStore('warehouse', {
         if (!d.received) return;
         const a = ret.assets.find((x) => x.key === d.key); if (!a) return;
         a.received = true;
-        refund += Number(a.cost) || 0; // PC refunded to the facility for the asset
+        if (a.kind !== 'cart') refund += Number(a.cost) || 0; // PC refunded to the facility (carts are credited via the refurb formula below)
         if (a.kind === 'cart' && a.cart_id) {
           const cart = this.carts.find((c) => c.id === a.cart_id);
           if (cart) {
@@ -865,9 +896,19 @@ export const useWarehouseStore = defineStore('warehouse', {
               charge += r.total;                              // cost charged to the source facility
               this.logStock(m.vendor_item_id, 'out', q, 'Return make-whole', ret.ret_no, 'replace missing in ' + cart.code);
             });
-            // cart restored to standard: back to warehouse availability at full component cost
-            cart.cost = r2(cart.components.reduce((s, c) => s + (Number(c.qty) || 0) * this.fifoUnitCost(c.vendor_item_id), 0));
+            // V6 CA-2/CA-3: a returned cart comes back as a REFURBISHED unit in its own pool,
+            // valued by the refund logic (the same credit the facility receives) — not its original build cost.
+            const bookCost = r2(cart.components.reduce((s, c) => s + (Number(c.qty) || 0) * this.fifoUnitCost(c.vendor_item_id), 0));
+            const credit = this.refurbishedValue(bookCost);
+            refund += credit; // the facility is credited this amount for the returned cart
+            cart.original_cost = bookCost;
+            cart.cost = credit;
+            cart.condition = 'Refurbished';
+            cart.refurbished = true;
+            cart.refurb_date = TODAY;
+            cart.returned_from = ret.source_label;
             this.setCartLocation(cart, 'Warehouse', null);
+            this.logActivity('Cart ' + cart.code + ' returned → Refurbished (credit ' + credit + ')');
           }
         } else if ((a.kind === 'laptop' || a.kind === 'trivia') && a.ua_id) {
           const ua = this.userAssets.find((x) => x.id === a.ua_id); if (ua) ua.status = 'Returned';
@@ -904,7 +945,21 @@ export const useWarehouseStore = defineStore('warehouse', {
     updateAssemblyDef(id, patch) { const a = this.assemblyById(id); if (a) Object.assign(a, patch); },
     addAssemblyType(name) { const id = 'at-' + uid('t'); this.assemblyTypes.push({ id, name: name || 'New Type' }); return id; },
     updateAssemblyType(id, name) { const t = (this.assemblyTypes || []).find((x) => x.id === id); if (t) t.name = name; },
-    assemblyAutoFill(defId) { const a = this.assemblyById(defId); return a ? { ...(a.asset_defaults || {}) } : {}; },
+    assemblyAutoFill(defId) {
+      const a = this.assemblyById(defId); if (!a) return {};
+      const out = { ...(a.asset_defaults || {}) };
+      // V6 AS-2: trace the fields back through the inventory — infer from the names of the groups/items pulled in.
+      (a.composition || []).forEach((c) => {
+        const nm = (c.kind === 'group' ? (this.groupById(c.ref_id) || {}).name : (this.itemById(c.ref_id) || {}).name) || '';
+        const n = nm.toLowerCase();
+        if (!out.cart_type && /cta/.test(n)) out.cart_type = 'CTA Cart';
+        if (!out.key_type && /cta/.test(n)) out.key_type = 'CTA Key';
+        if (!out.bp_device && /vs8/.test(n)) out.bp_device = 'VS8';
+        if (!out.bp_device && /edan/.test(n)) out.bp_device = 'EDAN';
+        if (!out.bp_device && /accut/.test(n)) out.bp_device = 'Accutor';
+      });
+      return out;
+    },
     // AS-1..7 + IT-5: consume the parts (FIFO incl landed) and create exactly ONE tracked cart asset. Code mandatory.
     buildAssembly({ assembly_id, code, cart_color, tablet_number, fields }) {
       const a = this.assemblyById(assembly_id); if (!a) return { error: 'Unknown assembly.' };
@@ -919,14 +974,24 @@ export const useWarehouseStore = defineStore('warehouse', {
       this.counters.cart += 1;
       if (isSingle) {
         // single-item assembly: no composition to pull from — just the unit's entered info (RAM, make, price, …).
-        const unit = { id: uid('cart'), code: String(code).trim(), assembly_id, unit_kind: 'single', cart_type: a.name, fields: { ...(fields || {}) }, status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, assigned_user: '', cost: r2(cost), components: comp };
+        const unit = { id: uid('cart'), code: String(code).trim(), assembly_id, unit_kind: 'single', cart_type: a.name, condition: 'New', fields: { ...(fields || {}) }, status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, assigned_user: '', cost: r2(cost), components: comp };
         this.carts.unshift(unit); this.logActivity('Assembled ' + a.name + ' · ' + unit.code);
         return { cart: unit };
       }
       const af = { ...(a.asset_defaults || {}), ...(fields || {}) };
-      const cart = { id: uid('cart'), code: String(code).trim(), assembly_id, unit_kind: 'cart', cart_type: af.cart_type || this.assemblyTypeName(a.assembly_type_id), key_type: af.key_type || '', bp_device: af.bp_device || '', cart_color: cart_color || '', tablet_number: tablet_number || '', status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, cost: r2(cost), components: comp };
+      const cart = { id: uid('cart'), code: String(code).trim(), assembly_id, unit_kind: 'cart', cart_type: af.cart_type || this.assemblyTypeName(a.assembly_type_id), key_type: af.key_type || '', bp_device: af.bp_device || '', cart_color: cart_color || '', tablet_number: tablet_number || '', condition: 'New', status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, cost: r2(cost), components: comp };
       this.carts.unshift(cart); this.logActivity('Assembled ' + a.name + ' · ' + cart.code);
       return { cart };
+    },
+    buildAssembliesBatch(rows) {
+      const built = [], errors = [];
+      (rows || []).forEach((r, i) => {
+        if (!r || !r.assembly_id) return;
+        const res = this.buildAssembly({ assembly_id: r.assembly_id, code: r.code, cart_color: r.cart_color, tablet_number: r.tablet_number, fields: r.fields || {} });
+        if (res && res.cart) { if (r.condition === 'Refurbished') res.cart.condition = 'Refurbished'; built.push(res.cart); }
+        else errors.push({ row: i + 1, code: r.code || '(no code)', error: (res && res.error) || 'failed' });
+      });
+      return { built, errors };
     },
     editAssemblyUnit(cartId, patch) { const c = this.carts.find((x) => x.id === cartId); if (c) Object.assign(c, patch); return c; },
 

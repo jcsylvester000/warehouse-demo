@@ -154,11 +154,12 @@ console.log('\n=== JOURNEY 3: Cart assemble → assign → return make-whole + c
 
   const basketBeforeMakeWhole = onhand('i-basket');
   const done = s.confirmAssetReturn(ret.id, [{ key: 'cart:' + cart.id, received: true, missing: [{ vendor_item_id: 'i-basket', qty: 1 }] }]);
-  ok('refund to facility = cart cost (76.75)', approx(done.refund_total, 76.75), 'got ' + done.refund_total);
+  ok('refund to facility = refurbished value (76.75 x 0.8 = 61.40)', approx(done.refund_total, 61.4), 'got ' + done.refund_total);
   ok('make-whole charge = 1 basket @ fifo (28.5)', approx(done.replacement_charge, 28.5), 'got ' + done.replacement_charge);
   ok('make-whole pulls 1 basket from inventory', onhand('i-basket') === basketBeforeMakeWhole - 1);
   const restored = s.carts.find(c => c.id === cart.id);
   ok('cart returned to warehouse after make-whole', restored.location === 'Warehouse' && restored.status === 'Available');
+  ok('returned cart is now Refurbished (separate pool)', restored.condition === 'Refurbished' && restored.refurbished === true);
 
   // cart receipt closes the fulfillment loop
   const f = s.facilityById('f-maple'); // has cart_shipment_date

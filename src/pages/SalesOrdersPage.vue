@@ -32,7 +32,7 @@ const statusTone = (s) => ({ draft: 'slate', in_progress: 'amber', shipped: 'blu
 const statusLabel = (s) => ({ draft: 'Draft', in_progress: 'In Progress', shipped: 'Shipped', completed: 'Completed', backorder: 'Back order' }[s] || s);
 const backordersReady = computed(() => store.backordersReady());
 
-function confirmSo(so) { so.status = 'in_progress'; toast.success(so.so_number + ' confirmed.'); }
+function confirmSo(so) { store.confirmSo(so); toast.success(so.so_number + ' confirmed — shipment added to the queue.'); }
 function completeSo(so) { so.status = 'completed'; toast.success(so.so_number + ' completed.'); }
 function reverse(so) { store.reverseShip(so); toast.info(so.so_number + ' shipment reversed — stock returned.'); }
 function shipBackorder(so) { if (so.status === 'backorder') so.status = 'in_progress'; openShip(so); }
@@ -140,11 +140,13 @@ function openShip(so) {
     const is_single = !!(adef && adef.assembly_kind === 'single');
     // single-item assemblies (laptops/gameshows) auto-assign to the employee on the SO; allow override here.
     const assignable = is_single || (l.kind === 'group' ? (l.members || []).some((m) => store.isEmployeeAssignable(m.vendor_item_id)) : false);
-    return { idx, name: l.name, is_group: l.kind === 'group', is_assembly, is_single, facility_id: l.facility_id, ordered: l.qty, remaining, avail, qty: Math.min(remaining, avail), assignable, employee_id: '', units: is_assembly ? store.availableUnits(l.assembly_id) : [], unit_ids: [] };
+    return { idx, name: l.name, is_group: l.kind === 'group', is_assembly, is_single, assembly_id: l.assembly_id, pool: 'New', facility_id: l.facility_id, ordered: l.qty, remaining, avail, qty: Math.min(remaining, avail), assignable, employee_id: '', unit_ids: [] };
   });
   showShip.value = true;
 }
 const anyShort = computed(() => shipRows.value.some((r) => r.qty < r.remaining));
+function unitsForRow(r) { return store.availableUnitsByCondition(r.assembly_id, r.pool); }
+function unitCapped(r, id) { return !r.unit_ids.includes(id) && r.unit_ids.length >= r.remaining; }
 function addShipLanded() { const so = shipSOref.value; if (!so) return; if (!slc.label.trim() || !(Number(slc.amount) > 0)) return toast.error('Enter a label and amount.'); (so.landed_costs = so.landed_costs || []).push({ id: uid('lc'), label: slc.label.trim(), amount: Number(slc.amount) }); Object.assign(slc, { label: '', amount: '' }); }
 function doShip() {
   const rows = shipRows.value.map((r) => r.is_assembly ? { idx: r.idx, qty: (r.unit_ids || []).length, unit_ids: r.unit_ids || [], employee_id: r.employee_id || '' } : { idx: r.idx, qty: Number(r.qty), employee_id: r.employee_id }).filter((r) => r.qty > 0);
@@ -378,7 +380,7 @@ const showShipments = ref(false); const showEmails = ref(false); const showDocs 
             <td class="px-3 py-2 text-slate-500">{{ (store.facilityById(r.facility_id)||{}).name }}</td>
             <td class="px-3 py-2 text-right tabular-nums">{{ r.ordered }}</td>
             <td class="px-3 py-2 text-right tabular-nums" :class="r.avail<r.remaining?'text-rose-600 font-semibold':''">{{ r.avail }}</td>
-            <td class="px-3 py-2 text-right"><div v-if="r.is_assembly" class="flex flex-wrap gap-1 justify-end max-w-[280px]"><label v-for="u in r.units" :key="u.id" class="inline-flex items-center gap-1 text-[11px] rounded ring-1 ring-slate-200 px-1.5 py-0.5 cursor-pointer"><input type="checkbox" :value="u.id" v-model="r.unit_ids" /> {{ u.code }}</label><span v-if="!r.units.length" class="text-xs text-slate-400">no built units</span></div><input v-else v-model.number="r.qty" type="number" min="0" :max="Math.min(r.remaining,r.avail)" class="w-20 h-8 px-2 rounded border border-slate-300 text-right" /></td>
+            <td class="px-3 py-2 text-right"><div v-if="r.is_assembly" class="flex flex-col items-end gap-1"><select v-model="r.pool" class="h-7 px-1.5 rounded border border-slate-300 text-[11px]" title="Choose the pool — new vs refurbished are never mixed."><option>New</option><option>Refurbished</option></select><div class="flex flex-wrap gap-1 justify-end max-w-[300px]"><label v-for="u in unitsForRow(r)" :key="u.id" class="inline-flex items-center gap-1 text-[11px] rounded ring-1 px-1.5 py-0.5 cursor-pointer" :class="(u.condition==='Refurbished') ? 'ring-amber-300 bg-amber-50' : 'ring-slate-200'"><input type="checkbox" :value="u.id" v-model="r.unit_ids" :disabled="unitCapped(r,u.id)" /> {{ u.code }}<span v-if="u.condition==='Refurbished'" class="text-amber-700 font-bold">R</span></label><span v-if="!unitsForRow(r).length" class="text-xs text-slate-400">no {{ r.pool.toLowerCase() }} units</span></div><span class="text-[10px] text-slate-400">pick up to {{ r.remaining }} · {{ r.unit_ids.length }} selected <ReqTag ver="V6" code="SO-5" text="V6 SO 5 — pick specific units from a pool (new vs refurbished, R-tagged), capped at what is in the warehouse; the shortfall goes to a back order." /></span></div><input v-else v-model.number="r.qty" type="number" min="0" :max="Math.min(r.remaining,r.avail)" class="w-20 h-8 px-2 rounded border border-slate-300 text-right" /></td>
             <td class="px-3 py-2"><select v-if="r.assignable" v-model="r.employee_id" class="h-8 px-2 rounded border border-slate-300 text-xs"><option value="">— employee —</option><option v-for="u in store.employeeList" :key="u.id" :value="u.id">{{ u.name }}</option></select><span v-else class="text-xs text-slate-300">—</span></td>
           </tr>
         </tbody>
