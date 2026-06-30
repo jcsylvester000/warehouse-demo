@@ -69,7 +69,7 @@ function doConfirm() {
     </Hero>
 
     <div class="mb-4 rounded-xl bg-amber-50 ring-1 ring-amber-200 px-4 py-3 text-sm text-amber-900 flex items-start gap-2">
-      <div class="flex-1"><p><b>Only assets are returned.</b> Start from a <b>facility</b> or an <b>employee</b> and pick the assets. On arrival, confirm what was received. A returned <b>cart</b> is made whole (missing parts replaced from inventory, charged to the facility) and then comes back as a <b>Refurbished</b> unit in its own pool.</p>
+      <div class="flex-1"><p><b>Only assets are returned.</b> Start from a <b>facility</b> or an <b>employee</b> and pick the assets. On arrival, confirm what was received. A returned <b>cart</b> is made whole (missing parts replaced from inventory, charged to the facility) and then comes back as a <b>Refurbished</b> unit in its own pool. <ReqTag ver="V7" code="FRESH-DATA" text="V7 — Returns start empty for fresh data. Click + New Return and pick the assets a facility or employee is sending back; 'Reset demo data' clears back to this state." /></p>
         <div class="mt-2 flex items-center gap-2 text-[12px]">
           <span class="font-semibold">Refurbished credit / value:</span>
           <input type="number" min="0" max="100" step="5" :value="Math.round(store.refurbCreditRate*100)" @change="store.setRefurbCreditRate(($event.target.value||0)/100)" class="w-16 h-7 px-2 rounded border border-amber-300 text-sm" /> <span>% of the cart's book cost</span>

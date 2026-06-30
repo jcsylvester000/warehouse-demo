@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useWarehouseStore, persistWarehouse } from '@/stores/warehouse';
+import { useBackendSync } from '@/composables/useBackendSync';
 import { useToast } from '@/composables/useToast';
 import { useAnnotations } from '@/composables/useAnnotations';
 import { fmtDateTime } from '@/utils/format';
@@ -17,6 +18,8 @@ const { showAnnotations, toggle: toggleNotes } = useAnnotations();
 
 // Persist store → sessionStorage (cleared by the browser on tab/window close).
 persistWarehouse(store);
+// Live backend (Prisma + Neon): loads & saves shared data when VITE_API_URL is set.
+useBackendSync(store);
 
 const nav = [
   { name: 'Warehouse Dashboard', to: '/', icon: 'M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10', isNew: true },

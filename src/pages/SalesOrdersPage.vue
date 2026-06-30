@@ -204,6 +204,10 @@ const showShipments = ref(false); const showEmails = ref(false); const showDocs 
       </template>
     </Hero>
 
+    <div class="-mt-1 mb-3">
+      <ReqTag ver="V7" code="FRESH-DATA" text="V7 — Sales Orders start empty for fresh data. Click + New SO to ship to your own recipients; pick built units (New vs Refurbished) on each assembly line, and Confirm to queue a shipment. 'Reset demo data' clears back to this state." />
+    </div>
+
     <div v-if="backordersReady.length" class="mb-4 rounded-xl bg-emerald-50 ring-1 ring-emerald-200 px-4 py-3 text-sm text-emerald-900">
       <div class="flex items-center gap-2 mb-2"><b>{{ backordersReady.length }} back order(s) ready to ship</b> — items are back in stock.</div>
       <div class="flex flex-wrap gap-2">

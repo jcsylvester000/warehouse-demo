@@ -3,13 +3,25 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Carease Health — Warehouse (WMS) showcase. Vue 3 + Vite recreation of the warehouse section with proposed enhancements.",
+  "description": "Carease Health Warehouse (WMS). Vue 3 + Vite recreation with proposed enhancements. Live backend: Prisma + Neon (PostgreSQL).",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "node server/index.mjs",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:verify": "node server/verify-neon.mjs",
+    "db:init": "node server/init-workspace.mjs",
+    "stack": "concurrently -n api,web -c green,cyan \"npm:server\" \"npm:dev\""
   },
   "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.22.0",
     "pinia": "^2.2.2",
     "qrcode-generator": "^2.0.4",
     "vue": "^3.4.38",
@@ -18,6 +30,8 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-vue": "^5.1.2",
+    "concurrently": "^9.1.0",
+    "prisma": "^5.22.0",
     "tailwindcss": "^4.0.0",
     "vite": "^5.4.2"
   }

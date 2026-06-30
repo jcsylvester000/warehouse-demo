@@ -201,7 +201,7 @@ const singleOptions = computed(() => store.catalogLite.filter((o) => !o.is_group
     <Hero title="Inventory" subtitle="One list of items and groups. Numeric item numbers auto-generate; click any row to open it." :chips="chips" @chip="onChip" />
 
     <div class="mb-4 rounded-xl bg-emerald-50/70 ring-1 ring-emerald-100 px-4 py-3 text-sm text-emerald-900 flex items-start gap-2">
-      <p><b>Groups are items.</b> A group lives in the same list as everything else and can contain single items <b>and</b> nested groups. <b>Click a row</b> to edit it, adjust stock, or view lots & logs. <b>Item numbers</b> are numeric and auto-generated.</p>
+      <p><b>Groups are items.</b> A group lives in the same list as everything else and can contain single items <b>and</b> nested groups. <b>Click a row</b> to edit it, adjust stock, or view lots & logs. <b>Item numbers</b> are numeric and auto-generated. <ReqTag ver="V7" code="FRESH-DATA" text="V7 — Inventory starts empty for fresh data. Add single items and groups with the + buttons, then build carts from them under the Assemblies tab. Purchase Orders, Sales Orders and Returns also start empty; 'Reset demo data' returns to this clean state." /></p>
     </div>
 
     <Card :padded="false">

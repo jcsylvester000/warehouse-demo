@@ -3,7 +3,7 @@ import { uid } from '@/utils/format';
 import { assetSeed } from '@/data/assetSeed';
 import { geoForFacility } from '@/utils/geo';
 
-const SKEY = 'carease_wms_app_v6';
+const SKEY = 'carease_wms_app_v7';
 // When false (set by the app at startup), the seed ships with NO Purchase Orders, Sales Orders or Returns
 // so the supervisor can test with fresh data he inputs. Tests leave it true to exercise the demo transactions.
 let SEED_TX = true;
@@ -336,11 +336,6 @@ function seed() {
   ];
   db.counters.sku = 100034; db.counters.po = 194; db.counters.so = 153; db.counters.cart = 193; db.counters.asset = 2212; db.counters.ret = 41; db.counters.vbill = 1;
   // Fresh-data mode for the supervisor: no seeded Purchase Orders / Sales Orders / Returns (and their generated bills, shipments, emails).
-  if (!SEED_TX) {
-    db.purchaseOrders = []; db.salesOrders = []; db.returns = [];
-    db.vendorBills = []; db.shipments = []; db.shipQueue = []; db.emails = [];
-    db.counters.po = 0; db.counters.so = 0; db.counters.ret = 0; db.counters.ship = 0; db.counters.vbill = 0;
-  }
 
   // normalize qty_onhand/qty_available from lots
   // Amendment: ONLY assemblies are assets. Raw laptops / trivia / gameshows are "assembly-only" parts:
@@ -371,6 +366,21 @@ function seed() {
   (assetSeed.ezpass || []).forEach((r) => db.assets.push(mkA('ezpass', r)));
   db.terminatedEmployees = (assetSeed.terminated_employees || []).map((t, i) => ({ id: 'te-' + (i + 1), ...t }));
   db.counters.asn = _an;
+  if (!SEED_TX) {
+    // Transactions
+    db.purchaseOrders = []; db.salesOrders = []; db.returns = [];
+    db.vendorBills = []; db.shipments = []; db.shipQueue = []; db.emails = [];
+    // Inventory (single items, groups, assembly definitions)
+    db.items = []; db.groups = []; db.assemblies = [];
+    // Assets (built units + the asset registry + tracked/facility/user assets + recovery)
+    db.carts = []; db.assets = []; db.trackedAssets = []; db.facilityAssets = []; db.userAssets = [];
+    db.terminatedEmployees = [];
+    // Logs / receipts / dashboard noise tied to demo data
+    db.stockLogs = []; db.cartReceipts = []; db.notifications = []; db.activity = [];
+    db.counters.po = 0; db.counters.so = 0; db.counters.ret = 0; db.counters.ship = 0; db.counters.vbill = 0; db.counters.cart = 0;
+    // Kept (master data + config the supervisor builds against): vendors, facilities, regionals, users,
+    // itemTypes, assemblyTypes, assetClasses, roles/capabilities, settings.
+  }
   return db;
 }
 

@@ -17,3 +17,9 @@ vite.config.js.timestamp-*
 
 # Internal supervisor documentation — not part of the app
 Supervisor Docs/
+
+# Backend secrets & generated client
+.env
+.env.*
+!.env.example
+prisma/dev.db

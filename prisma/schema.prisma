@@ -1,0 +1,64 @@
+// Carease Health — Warehouse WMS
+// Prisma schema · Neon (PostgreSQL)
+//
+// PHASE 1 (live now): the whole app state is persisted as one JSON document per
+// workspace. This gives the app a real, shared backend immediately — data lives
+// in Neon and is shared across sessions/devices — without rewriting every getter
+// in the Pinia store. The `state` column holds the same object the app used to
+// keep in sessionStorage.
+//
+// PHASE 2 (roadmap, see BACKEND.md): promote the high-value collections
+// (items, groups, assemblies, assets, purchaseOrders, salesOrders, returns)
+// into the normalized tables stubbed at the bottom of this file, and move the
+// API from "save the blob" to per-entity CRUD. The models are written but not
+// yet wired, so they are commented to keep Phase 1 migrations clean.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1 — working persistence
+// ---------------------------------------------------------------------------
+
+model Workspace {
+  id        String   @id @default(cuid())
+  slug      String   @unique // e.g. "carease-default"; lets you keep several datasets
+  label     String   @default("Carease Warehouse")
+  state     Json // full app state (items, groups, assemblies, assets, POs, SOs, returns, settings, counters)
+  version   Int      @default(1) // optimistic-concurrency guard
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Append-only audit of every saved state (handy for "undo" / supervisor review).
+model StateSnapshot {
+  id          String   @id @default(cuid())
+  workspace   String // Workspace.slug
+  version     Int
+  state       Json
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([workspace, version])
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 2 — normalized tables (roadmap; intentionally commented until wired)
+// ---------------------------------------------------------------------------
+//
+// model Vendor { id String @id @default(cuid()) name String depositPercent Float @default(0) ... }
+// model Item   { id String @id @default(cuid()) sku String code String name String qtyOnhand Int reorderPoint Int ... }
+// model Group  { id String @id @default(cuid()) name String assemblyOnly Boolean @default(false) members Json ... }
+// model AssemblyDef { id String @id @default(cuid()) name String assemblyKind String assemblyTypeId String composition Json ... }
+// model AssetUnit   { id String @id @default(cuid()) code String assemblyId String condition String cost Float status String ... }
+// model Asset       { id String @id @default(cuid()) klass String code String holderType String holder String status String fields Json ... }
+// model PurchaseOrder { id String @id @default(cuid()) poNumber String vendorId String status String lines Json landed Json payments Json ... }
+// model SalesOrder    { id String @id @default(cuid()) soNumber String status String lines Json ... }
+// model Return        { id String @id @default(cuid()) retNumber String sourceLabel String lines Json status String ... }

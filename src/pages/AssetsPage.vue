@@ -115,7 +115,8 @@ const chips = computed(() => [
     <Hero title="Assets" subtitle="Every tracked unit the company owns — carts and IT equipment — by class, holder and status." :chips="chips" />
 
     <div class="-mt-2 mb-4 flex flex-wrap items-center gap-2">
-      <ReqTag ver="V5" code="ASSETS" text="NEW — the Assets section now holds all 8 real asset classes (Carts, Laptops, Game Shows, Tablets, Monitors, Desktops, Cell Phones, EZ Pass), seeded from your Cart List inventory." />
+      <ReqTag ver="V7" code="FRESH-DATA" text="V7 — Assets start empty so you can enter your own. An asset appears here automatically when you build a cart (Inventory → Build) or add one with the + button; the 8 classes are ready to fill." />
+      <ReqTag ver="V5" code="ASSETS" text="The Assets section holds all 8 real asset classes (Carts, Laptops, Game Shows, Tablets, Monitors, Desktops, Cell Phones, EZ Pass)." />
       <ReqTag ver="V5" code="CART-FIELDS" text="NEW — corrected cart schema: Cart Type is the wheel (cta wheel 1/2, cta yellow, microlife); BP Machine is edan / vs8 / accutar." />
       <ReqTag ver="V5" code="EDIT" text="NEW — add and edit any asset, with pagination (10–50 per page) for the large lists." />
       <ReqTag ver="V5" code="RETURNS" text="NEW — terminated employees show their outstanding assets; Start recovery flags them and Mark returned closes them out." />

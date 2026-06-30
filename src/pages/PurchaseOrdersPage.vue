@@ -139,6 +139,10 @@ onMounted(() => { const d = store.takePoDraft(); if (d && d.length) { openForm()
       </template>
     </Hero>
 
+    <div class="-mt-1 mb-3">
+      <ReqTag ver="V7" code="FRESH-DATA" text="V7 — Purchase Orders start empty for fresh data. Click + New PO to create one against your own vendors and items; receiving a PO flows stock into Inventory. 'Reset demo data' clears back to this state." />
+    </div>
+
     <div v-if="lastResult" class="mb-4 rounded-xl bg-emerald-50 ring-1 ring-emerald-200 px-4 py-3 text-sm text-emerald-900 flex items-center gap-3">
       <span class="font-semibold">Received {{ lastResult.po }} → {{ lastResult.ro }}.</span>
       <span v-if="lastResult.landedPerUnit">Landed +{{ money(lastResult.landedPerUnit) }}/unit (carried on FIFO).</span>
