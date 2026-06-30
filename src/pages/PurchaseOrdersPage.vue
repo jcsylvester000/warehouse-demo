@@ -162,7 +162,7 @@ onMounted(() => { const d = store.takePoDraft(); if (d && d.length) { openForm()
               <td class="px-5 py-3"><Badge :tone="statusTone(po.status)">{{ po.status }}</Badge></td>
               <td class="px-5 py-3 text-right whitespace-nowrap" @click.stop>
                 <Btn variant="ghost" size="sm" @click="openPO(po)">Open</Btn>
-                <Btn variant="ghost" size="sm" @click="openSend(po)">Send</Btn>
+                <Btn v-if="po.status!=='received'" variant="ghost" size="sm" @click="openSend(po)">Send <ReqTag ver="V6" code="SO-1" text="V6 SO 1 — the Send button disappears once the order is received; available up until then." /></Btn>
                 <Btn v-if="po.status!=='received'" variant="soft-primary" size="sm" @click="openRecv(po)">Receive</Btn>
               </td>
             </tr>
@@ -180,7 +180,7 @@ onMounted(() => { const d = store.takePoDraft(); if (d && d.length) { openForm()
           <div class="ml-auto flex gap-2">
             <span class="inline-flex items-center gap-1.5"><Btn variant="secondary" size="sm" @click="showDocs=true">Documents</Btn><Tag /></span>
             <Btn variant="secondary" size="sm" @click="showPO=false; editReturnPO=cur; openForm(cur)">Edit PO</Btn>
-            <Btn variant="secondary" size="sm" @click="openSend(cur, !!cur.sent)">{{ cur.sent ? 'Resend' : 'Send' }}</Btn>
+            <Btn v-if="cur.status!=='received'" variant="secondary" size="sm" @click="openSend(cur, !!cur.sent)">{{ cur.sent ? 'Resend' : 'Send' }}</Btn>
             <Btn v-if="cur.status!=='received'" variant="success" size="sm" @click="showPO=false; openRecv(cur)">Receive</Btn>
           </div>
         </div>

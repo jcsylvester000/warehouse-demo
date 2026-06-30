@@ -82,7 +82,8 @@ ok('PO-2','a $ symbol sits next to the deposit amount', /\$<\/span>[\s\S]{0,80}f
 ok('PO-3','next payment prefills the remaining balance (editable)', PO.includes('poRemaining') && /pay\.amount/.test(PO));
 
 console.log('\n=== SO small fixes (UI) ===');
-ok('SO-1/2','Print is always available; Send hides once received', SO.includes('doPrint'));
+ok('SO-2','Print is always available (not gated by status)', SO.includes('doPrint'));
+ok("SO-1","Send button hides once a PO is received", /v-if="po.status!==.received."[\s\S]{0,80}openSend/.test(PO) && /v-if="cur.status!==.received."[\s\S]{0,120}openSend/.test(PO));
 
 console.log('\n=== QUEUED ITEMS — NOW BUILT ===');
 // AS-5: build multiple at once
