@@ -206,10 +206,10 @@ function seed() {
     { id: 'i-cable-pwr', sku: '100016', name: 'Power Cable', vendor_id: 'v-cables', item_type_id: 't-cable', cost: 8.0, threshold: 80, bin_location: 'B-11', is_active: true, lots: mkLots([{ q: 200, c: 7.5, d: '2026-06-05' }]) },
     { id: 'i-spo2', sku: '100017', name: 'SPO2 Sensor', vendor_id: 'v-edan', item_type_id: 't-spo2', cost: 35.0, threshold: 30, bin_location: 'E-01', is_active: true, lots: mkLots([{ q: 80, c: 34.0, d: '2026-06-07' }]) },
     { id: 'i-bphose', sku: '100018', name: 'BP Hose', vendor_id: 'v-edan', item_type_id: 't-bp', cost: 12.0, threshold: 40, bin_location: 'E-02', is_active: true, lots: mkLots([{ q: 120, c: 11.5, d: '2026-06-07' }]) },
-    { id: 'i-bpdev', sku: '100019', name: 'VS8 BP Device', vendor_id: 'v-edan', item_type_id: 't-bp', cost: 220.0, threshold: 10, bin_location: 'E-03', is_active: true, lots: mkLots([{ q: 30, c: 210.0, d: '2026-06-08' }]) },
-    { id: 'i-edancart', sku: '100020', name: 'EDAN Cart Frame', vendor_id: 'v-edan', item_type_id: 't-cart', cost: 480.0, threshold: 6, bin_location: 'C-04', is_active: true, lots: mkLots([{ q: 15, c: 470.0, d: '2026-06-09' }]) },
-    { id: 'i-key', sku: '100021', name: 'CTA Cart Key', vendor_id: 'v-edan', item_type_id: 't-key', cost: 9.0, threshold: 20, bin_location: 'C-05', is_active: true, lots: mkLots([{ q: 60, c: 9.0, d: '2026-06-09' }]) },
-    { id: 'i-accutor', sku: '100022', name: 'Accutor BP Monitor', vendor_id: 'v-accutor', item_type_id: 't-bp', cost: 260.0, threshold: 8, bin_location: 'E-04', is_active: true, lots: mkLots([{ q: 18, c: 255.0, d: '2026-06-06' }]) },
+    { id: 'i-bpdev', sku: '100019', name: 'VS8 BP Device', vendor_id: 'v-edan', item_type_id: 't-bp', cost: 220.0, threshold: 10, bin_location: 'E-03', is_active: true, attrs: { bp_device: 'VS8' }, lots: mkLots([{ q: 30, c: 210.0, d: '2026-06-08' }]) },
+    { id: 'i-edancart', sku: '100020', name: 'EDAN Cart Frame', vendor_id: 'v-edan', item_type_id: 't-cart', cost: 480.0, threshold: 6, bin_location: 'C-04', is_active: true, attrs: { cart_type: 'EDAN Cart' }, lots: mkLots([{ q: 15, c: 470.0, d: '2026-06-09' }]) },
+    { id: 'i-key', sku: '100021', name: 'CTA Cart Key', vendor_id: 'v-edan', item_type_id: 't-key', cost: 9.0, threshold: 20, bin_location: 'C-05', is_active: true, attrs: { key_type: 'CTA Key' }, lots: mkLots([{ q: 60, c: 9.0, d: '2026-06-09' }]) },
+    { id: 'i-accutor', sku: '100022', name: 'Accutor BP Monitor', vendor_id: 'v-accutor', item_type_id: 't-bp', cost: 260.0, threshold: 8, bin_location: 'E-04', is_active: true, attrs: { bp_device: 'Accutor' }, lots: mkLots([{ q: 18, c: 255.0, d: '2026-06-06' }]) },
     { id: 'i-basket2', sku: '100023', name: 'Supply Basket (Large)', vendor_id: 'v-basketco', item_type_id: 't-basket', cost: 34.0, threshold: 30, bin_location: 'B-08', is_active: true, lots: mkLots([{ q: 90, c: 33.0, d: '2026-06-09' }]) },
   );
   db.groups.push(
@@ -346,7 +346,9 @@ function seed() {
   ['g-edanstarter', 'g-facility'].forEach((id) => { const g = db.groups.find((x) => x.id === id); if (g) g.assembly_only = true; });
   (db.groups || []).forEach((g) => { if (g.assembly_only === undefined) g.assembly_only = false; });
   // V6 CA + Q2: every assembled cart unit carries a condition (New vs Refurbished) and a real cart type.
-  (db.carts || []).forEach((c) => { if (c.condition === undefined) c.condition = 'New'; if (c.cart_type === 'Standard') c.cart_type = 'EDAN Cart'; });
+  (db.carts || []).forEach((c) => { if (c.condition === undefined) c.condition = 'New'; if (c.cart_type === 'Standard') c.cart_type = 'EDAN Cart';
+    // V4 SO-4: a warehouse cart with no assembly link was invisible to every assembly pool (read as 0 available). Tie it to a real pool so availability reflects real stock.
+    if (!c.assembly_id && c.location === 'Warehouse') { c.assembly_id = 'asm-edan'; c.unit_kind = c.unit_kind || 'cart'; } });
 
   // ---- Real Asset Registry (seeded from the Cart List inventory) ----
   // Adheres to the amendment: a Cart is a cart-assembly (assigned to a Facility + Regional);
@@ -502,6 +504,10 @@ export const useWarehouseStore = defineStore('warehouse', {
     // Placeholder until the real refund formula is provided; swap this one function and the whole app follows.
     refurbishedValue() { return (bookCost) => r2(Math.max(0, (Number(bookCost) || 0) * this.refurbCreditRate)); },
     groupAssemblyOnly(s) { return (id) => { const g = (s.groups || []).find((x) => x.id === id); return !!(g && g.assembly_only); }; },
+    // V4 OQ2: real Cart Type / Key / BP suggestions drawn from the carts + assemblies actually in the system — editable, no fictional values.
+    cartTypeOptions(s) { const set = new Set(); (s.carts || []).forEach((c) => { if (c.cart_type) set.add(c.cart_type); }); (s.assemblies || []).forEach((a) => { if (a.asset_defaults && a.asset_defaults.cart_type) set.add(a.asset_defaults.cart_type); }); (s.assemblyTypes || []).forEach((t) => { if (t.name) set.add(t.name); }); return [...set].sort(); },
+    keyTypeOptions(s) { const set = new Set(); (s.carts || []).forEach((c) => { if (c.key_type) set.add(c.key_type); }); (s.assemblies || []).forEach((a) => { if (a.asset_defaults && a.asset_defaults.key_type) set.add(a.asset_defaults.key_type); }); return [...set].sort(); },
+    bpDeviceOptions(s) { const set = new Set(); (s.carts || []).forEach((c) => { if (c.bp_device && c.bp_device !== '\u2014') set.add(c.bp_device); }); (s.assemblies || []).forEach((a) => { if (a.asset_defaults && a.asset_defaults.bp_device && a.asset_defaults.bp_device !== '\u2014') set.add(a.asset_defaults.bp_device); }); (s.items || []).forEach((i) => { if (i.attrs && i.attrs.bp_device) set.add(i.attrs.bp_device); }); return [...set].sort(); },
     // V6 SO-4: one robust availability number per SO line (assembly -> built units; group -> min member; item -> on hand).
     soLineAvailable() { return (l) => this.soLineMaxShippable(l); },
     shippingQueue(s) { return s.shipQueue || []; },
@@ -968,7 +974,14 @@ export const useWarehouseStore = defineStore('warehouse', {
     assemblyAutoFill(defId) {
       const a = this.assemblyById(defId); if (!a) return {};
       const out = { ...(a.asset_defaults || {}) };
-      // V6 AS-2: trace the fields back through the inventory — infer from the names of the groups/items pulled in.
+      // V4 AS-2: trace the asset fields from the ACTUAL inventory items pulled in (item -> group -> assembly),
+      // reading each component item's stored attrs. Curated per-assembly defaults win; attrs fill any blanks.
+      const leaves = this.expandAssembly(defId, 1);
+      Object.keys(leaves).forEach((k) => {
+        const it = this.itemById(k);
+        if (it && it.attrs) Object.keys(it.attrs).forEach((f) => { if (!out[f] && it.attrs[f]) out[f] = it.attrs[f]; });
+      });
+      // last-resort name inference, only for components that carry no attrs of their own.
       (a.composition || []).forEach((c) => {
         const nm = (c.kind === 'group' ? (this.groupById(c.ref_id) || {}).name : (this.itemById(c.ref_id) || {}).name) || '';
         const n = nm.toLowerCase();
@@ -998,7 +1011,7 @@ export const useWarehouseStore = defineStore('warehouse', {
         this.carts.unshift(unit); this.logActivity('Assembled ' + a.name + ' · ' + unit.code);
         return { cart: unit };
       }
-      const af = { ...(a.asset_defaults || {}), ...(fields || {}) };
+      const af = { ...this.assemblyAutoFill(assembly_id), ...(fields || {}) }; // V4 AS-2: fields traced from inventory carry onto the built unit
       const cart = { id: uid('cart'), code: String(code).trim(), assembly_id, unit_kind: 'cart', cart_type: af.cart_type || this.assemblyTypeName(a.assembly_type_id), key_type: af.key_type || '', bp_device: af.bp_device || '', cart_color: cart_color || '', tablet_number: tablet_number || '', condition: 'New', status: 'Available', location: 'Warehouse', facility_id: null, regional_id: null, cost: r2(cost), components: comp };
       this.carts.unshift(cart); this.logActivity('Assembled ' + a.name + ' · ' + cart.code);
       return { cart };

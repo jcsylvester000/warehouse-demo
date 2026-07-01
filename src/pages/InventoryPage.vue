@@ -388,6 +388,7 @@ const singleOptions = computed(() => store.catalogLite.filter((o) => !o.is_group
             <div>
               <span class="block text-slate-600 mb-1 text-sm">Parts — groups &amp; singles <ReqTag ver="V4" code="AS-2" text="V4 Assemblies #2 — a cart assembly is built from group items and singles." /> <span class="text-xs text-slate-400">— search &amp; click to add</span></span>
               <SearchPicker :options="store.catalogLite" :exclude-ids="asmPartExclude" placeholder="Search groups &amp; items…" @pick="onAsmPartPick" />
+              <p class="mt-1 text-[11px] text-violet-600">An assembly can combine <b>any number of groups and single items</b> — add as many as the cart needs.</p>
             </div>
             <div v-for="(c,idx) in asmForm.composition" :key="idx" class="flex items-center gap-2 text-sm rounded-lg ring-1 ring-slate-100 px-3 py-2">
               <Badge :tone="c.kind==='group'?'emerald':'slate'">{{ c.kind }}</Badge>
@@ -399,10 +400,14 @@ const singleOptions = computed(() => store.catalogLite.filter((o) => !o.is_group
             <div class="rounded-lg bg-violet-50/60 ring-1 ring-violet-100 p-3">
               <div class="text-xs font-semibold uppercase tracking-wide text-violet-700 mb-2">Asset auto-fill defaults <ReqTag ver="V4" code="AS-3" text="V4 Assemblies #3 — these defaults auto-fill the asset fields when a unit is built." /></div>
               <div class="grid grid-cols-3 gap-3">
-                <label class="text-sm"><span class="block text-slate-600 mb-1">Cart Type</span><input v-model="asmForm.asset_defaults.cart_type" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
-                <label class="text-sm"><span class="block text-slate-600 mb-1">Key Type</span><input v-model="asmForm.asset_defaults.key_type" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
-                <label class="text-sm"><span class="block text-slate-600 mb-1">BP Device</span><input v-model="asmForm.asset_defaults.bp_device" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+                <label class="text-sm"><span class="block text-slate-600 mb-1">Cart Type</span><input v-model="asmForm.asset_defaults.cart_type" list="dlCT_a" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+                <label class="text-sm"><span class="block text-slate-600 mb-1">Key Type</span><input v-model="asmForm.asset_defaults.key_type" list="dlKT_a" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+                <label class="text-sm"><span class="block text-slate-600 mb-1">BP Device</span><input v-model="asmForm.asset_defaults.bp_device" list="dlBP_a" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
               </div>
+              <datalist id="dlCT_a"><option v-for="o in store.cartTypeOptions" :key="o" :value="o" /></datalist>
+              <datalist id="dlKT_a"><option v-for="o in store.keyTypeOptions" :key="o" :value="o" /></datalist>
+              <datalist id="dlBP_a"><option v-for="o in store.bpDeviceOptions" :key="o" :value="o" /></datalist>
+              <p class="mt-1 text-[11px] text-slate-500">Suggestions come from your existing cart types — type your own to add a new one. Finalize the list any time in <b>Manage cart types</b>.</p>
             </div>
           </template>
 
@@ -457,13 +462,16 @@ const singleOptions = computed(() => store.catalogLite.filter((o) => !o.is_group
         <label class="text-sm block"><span class="block text-slate-600 mb-1">Which assembly are you building? <ReqTag ver="V6" code="AS-3" text="V6 Assemblies 3 — clearly choose which assembly type you are building." /></span><select v-model="build.assembly_id" @change="reloadBuildFields" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm"><option v-for="a in store.assemblies" :key="a.id" :value="a.id">{{ a.name }}<template v-if="a.assembly_kind==='single'"> (single-item)</template></option></select></label>
         <div class="rounded-lg bg-slate-50 ring-1 ring-slate-100 p-3 text-xs text-slate-600">Buildable now: <b>{{ store.assemblyBuildable(buildDef.id) }}</b> · Unit cost (FIFO incl. landed): <b>{{ money(store.assemblyUnitCost(buildDef.id)) }}</b></div>
 
+        <datalist id="dlCT_b"><option v-for="o in store.cartTypeOptions" :key="o" :value="o" /></datalist>
+        <datalist id="dlKT_b"><option v-for="o in store.keyTypeOptions" :key="o" :value="o" /></datalist>
+        <datalist id="dlBP_b"><option v-for="o in store.bpDeviceOptions" :key="o" :value="o" /></datalist>
         <!-- CART build -->
         <div v-if="buildDef.assembly_kind!=='single'" class="grid grid-cols-2 gap-3">
           <label class="text-sm"><span class="block text-slate-600 mb-1">Cart Code <span class="text-rose-500">*</span> <ReqTag ver="V4" code="AS-4" text="V4 Assemblies #4 — Cart Code is mandatory and the unit carries all asset info." /></span><input v-model="build.code" placeholder="e.g. CART-V-0002" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
           <label class="text-sm"><span class="block text-slate-600 mb-1">Cart Color</span><input v-model="build.cart_color" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
-          <label class="text-sm"><span class="block text-slate-600 mb-1">Cart Type</span><input v-model="build.fields.cart_type" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
-          <label class="text-sm"><span class="block text-slate-600 mb-1">Key Type</span><input v-model="build.fields.key_type" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
-          <label class="text-sm"><span class="block text-slate-600 mb-1">BP Device</span><input v-model="build.fields.bp_device" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+          <label class="text-sm"><span class="block text-slate-600 mb-1">Cart Type</span><input v-model="build.fields.cart_type" list="dlCT_b" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+          <label class="text-sm"><span class="block text-slate-600 mb-1">Key Type</span><input v-model="build.fields.key_type" list="dlKT_b" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
+          <label class="text-sm"><span class="block text-slate-600 mb-1">BP Device</span><input v-model="build.fields.bp_device" list="dlBP_b" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
           <label class="text-sm"><span class="block text-slate-600 mb-1">Tablet Number</span><input v-model="build.tablet_number" class="w-full h-9 px-3 rounded-lg border border-slate-300 text-sm" /></label>
         </div>
 
@@ -519,7 +527,7 @@ const singleOptions = computed(() => store.catalogLite.filter((o) => !o.is_group
     </Modal>
 
     <!-- manage cart (assembly) types -->
-    <Modal v-if="showTypes" title="Manage cart types" sub="Assembly types you can build (EDAN, VS8, Accutor …). Add new ones over time." @close="showTypes=false">
+    <Modal v-if="showTypes" title="Manage cart types" sub="Assembly types you can build (EDAN, VS8, Accutor …). Edit or add your real cart types here — the supervisor can finalize these during testing." @close="showTypes=false">
       <div class="space-y-2">
         <div v-for="t in store.assemblyTypes" :key="t.id" class="flex items-center gap-2"><input v-model="t.name" class="flex-1 h-9 px-3 rounded-lg border border-slate-300 text-sm" /></div>
         <div class="flex items-center gap-2 pt-2 border-t border-slate-100"><input v-model="newTypeName" placeholder="New cart type…" class="flex-1 h-9 px-3 rounded-lg border border-slate-300 text-sm" @keyup.enter="addType" /><Btn size="sm" @click="addType">Add</Btn></div>
